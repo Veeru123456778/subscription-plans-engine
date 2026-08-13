@@ -1,0 +1,14 @@
+# Java build output
+target/
+
+# IDE files
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# Local environment and logs
+.env
+*.log
+
