@@ -15,20 +15,21 @@ APIs to (a) the client apps (web/mobile) and (b) other internal services (Order 
 Checkout Service). It owns its own datastore and does not directly own Users, Orders, or
 Cohorts — those are read via internal APIs from their owning services.
 
+
 ```mermaid
 flowchart TB
-    Client["Client<br/>(App / Web)"]
+    Client["Client (App / Web)"]
     Checkout["Checkout Service"]
-
+ 
     subgraph MS["Membership Service"]
         direction TB
         PlanAPI["Plan API"]
-        TierAPI["Tier / Benefit<br/>Admin API"]
-        SubAPI["Subscription Lifecycle API<br/>(subscribe / cancel / upgrade)"]
-        Engine["Tier Evaluation Engine<br/>(lazy + cache)"]
-        Cache[("Cache — Redis<br/>key: tier:{userId}<br/>TTL: 1 hour, fixed")]
-        DB[("Primary DB<br/>Postgres")]
-
+        TierAPI["Tier / Benefit Admin API"]
+        SubAPI["Subscription Lifecycle API"]
+        Engine["Tier Evaluation Engine (lazy + cache)"]
+        Cache[("Cache - Redis, TTL 1h fixed")]
+        DB[("Primary DB - Postgres")]
+ 
         SubAPI --> Engine
         Engine --> Cache
         PlanAPI --> DB
@@ -36,22 +37,25 @@ flowchart TB
         SubAPI --> DB
         Engine --> DB
     end
-
-    OrderSvc["Order Service<br/>(order count / value, via API)"]
-    CohortSvc["User / Cohort Service<br/>(reads cohort_id / cohort_tags)"]
-    Razorpay["Razorpay (test mode)<br/>Payment Gateway"]
-
-    Client -->|REST / HTTPS| MS
-    Checkout -->|"GET /internal/benefits/{userId}<br/>at checkout time — FR-5"| SubAPI
+ 
+    OrderSvc["Order Service (order stats)"]
+    CohortSvc["User / Cohort Service"]
+    Razorpay["Razorpay - test mode"]
+ 
+    Client --> PlanAPI
+    Client --> TierAPI
+    Client --> SubAPI
+    Checkout -->|GET internal benefits| SubAPI
     Engine -->|order stats| OrderSvc
     Engine -->|cohort tags| CohortSvc
     SubAPI -->|payment| Razorpay
-
+ 
     classDef darkBox fill:#0a2d52,stroke:#04182e,stroke-width:3px,color:#ffffff;
     class Client,Checkout,PlanAPI,TierAPI,SubAPI,Engine,Cache,DB,OrderSvc,CohortSvc,Razorpay darkBox;
-
-    style MS fill:none,stroke:#0a2d52,stroke-width:2px,color:#0a2d52
+ 
+    style MS fill:none,stroke:#0a2d52,stroke-width:2px
 ```
+ 
 
 > **Diagram note:** `Order Service` and `User/Cohort Service` are both called independently by the Membership Service (via the Tier Evaluation Engine, §4) — they don't call each other. `Checkout Service` is a *consumer* of this service (calls in), not a dependency it calls out to.
 
@@ -784,3 +788,5 @@ No entity or endpoint from §2/§3 is missing a package. ✅ (Verified down to t
 
 - No separate "domain" vs "infrastructure" hexagonal split — for a service this size, feature packages with clean internal layering give most of the same benefit with less ceremony. Worth revisiting only if the service grows significantly or needs to swap persistence technology.
 - No CQRS / separate read-models — the lazy-cache pattern in `evaluation/` already handles the one place where read/write separation actually matters (tier resolution).
+
+
