@@ -27,7 +27,7 @@ Cohorts — those are read via internal APIs from their owning services.
 │  ┌───────────┐  ┌───────────┐  ┌────────────────────────┐ │
 │  │  Plan API  │  │ Tier/     │  │ Subscription Lifecycle │ │
 │  │            │  │ Benefit   │  │ API (subscribe/cancel/ │ │
-│  │            │  │ Admin API │  │ upgrade/downgrade)     │ │
+│  │            │  │ Admin API │  │ upgrade)               │ │
 │  └───────────┘  └───────────┘  └────────────────────────┘ │
 │                                                              │
 │  ┌────────────────────────────────────────────────────┐   │
@@ -67,39 +67,31 @@ Checkout Service → calls Membership Service's
 | Decision | Why | Traces to |
 |---|---|---|
 | Tier computed lazily, cached in Redis with fixed 1h TTL, not a batch cron job | Avoids scanning entire member base on a schedule; recompute only happens when actually needed | FR-11, Decisions Log #1 |
-| Paid upgrade / voluntary downgrade bypass cache and write-through immediately | These are explicit user actions and must reflect instantly | FR-9, FR-10 |
+| Paid upgrade bypasses cache and writes-through immediately; **voluntary tier downgrade is not offered** | Cache bypass: explicit user action must reflect instantly. No downgrade: given the no-refund policy, a downgrade action has no coherent meaning — see FR-9 note | FR-9 |
+| No refund logic anywhere in this service | Simplifies cancel to a pure status change, and is also why voluntary tier downgrade was dropped entirely (see above) | FR-12, Decisions Log #4, #10 |
 | Benefits stored as structured, typed rows (not hardcoded columns) | Admin needs to configure benefit types/values without a deploy | FR-3, Assumption 2 |
 | Tier-upgrade pricing stored as a matrix table keyed by (plan_id, from_tier, to_tier) | Price varies by both plan and tier-pair | FR-9, Assumption 4 |
 | Order count/value and cohort read via API from external services, not duplicated | Single source of truth; Membership Service doesn't own Orders/Cohorts | Assumption 3 |
 | One active Membership per user (DB-level uniqueness) | No stacked memberships allowed | Assumption 7 |
-| No refund logic anywhere in this service | Simplifies cancel/downgrade to a pure status change | FR-12, Decisions Log #4 |
+
+### 1.3 Implementation scope: what gets built vs. what gets mocked
+
+For the actual implementation/demo phase, effort is focused entirely on the **Membership Service** itself — the entities, APIs, tier-evaluation engine, and flows defined in this spec. The other systems shown in the §1.1 diagram as external boxes (**Order Service**, **User/Cohort Service**, **Checkout Service**) are **not being built** as part of this work. They will be **mocked** so the Membership Service can be demoed and run end-to-end on its own:
+
+| External dependency | How it's mocked for the demo |
+|---|---|
+| **Order Service** (`client/order/OrderServiceClientImpl`) | Replace the real HTTP client with a stub/fake implementation (e.g. an in-memory map of `userId → {orderCount, orderValue}`, seeded with test data) returning canned `UserOrderStats`. Same interface (`OrderServiceClient`) as the real one, so swapping in a real implementation later is a one-file change. |
+| **User/Cohort Service** (`client/cohort/CohortServiceClientImpl`) | Same approach — a stub returning canned `cohort_tags` per test user, behind the same `CohortServiceClient` interface. |
+| **Checkout Service** | Not mocked *inside* this codebase — instead, `GET /internal/benefits/{userId}` (§3.4) is demoed by calling it directly (e.g. via Postman/Swagger UI) to simulate what Checkout would do, since Checkout itself is a separate consumer, not a dependency this service calls. |
+| **Razorpay** | Not mocked — Razorpay's own **test mode** (per Assumption 9 / Decisions Log) is used directly, since it's a real, free, sandboxed environment built for exactly this purpose. No fake payment gateway needed. |
+
+**Why this approach, and what it preserves:** because `client/order/` and `client/cohort/` are already isolated behind interfaces (§9.4 — "isolates all outbound calls to other services behind interfaces, so the rest of the codebase never talks to `WebClient` directly"), swapping the mock implementations for real ones later requires touching only those two files — nothing in `evaluation/`, `membership/`, or anywhere else changes. This means the demo is a legitimate, representative run of the real system, not a simplified stand-in — the only thing different is where two small pieces of data (order stats, cohort tags) come from.
+
+**Scope note:** For now, these mocked services are not a concern — no effort goes into making them realistic, resilient, or production-like. They exist purely to unblock a working demo of the Membership Service. Integrating with the real Order Service and Cohort Service is deferred to a later phase, once those services/APIs actually exist.
 
 ---
 
 ## 2. Data Model
-
-### 2.1 Entity-Relationship overview
-
-```
-   Plan (1) ────────< (M) Membership (M) >──────── (1) User [external]
-     │                        │
-     │                        │ current_tier_id
-     │                        ▼
-     │                      Tier (1)───< (M) TierBenefit >───(1) Benefit
-     │                        │
-     │                        │
-     └──< (M) TierUpgradePrice >── keyed by (plan_id, from_tier_id, to_tier_id)
-                                │
-                              Tier (self-referencing via from/to)
-
-  Tier (1) ───< (M) TierCriteria
-
-  Membership (1) ───< (M) MembershipAuditLog
-
-  TierCache (Redis, not relational) — key: tier:{userId} → {tierId, computedAt, source}
-```
-
-### 2.2 Entities
 
 #### `Plan`
 Billing plan a user subscribes to.
@@ -117,29 +109,22 @@ Billing plan a user subscribes to.
 *Traces to: FR-1, FR-2*
 
 #### `Tier`
-A benefit level. Fixed set at launch (Silver/Gold/Platinum) but modeled as a table, not an enum, so tiers themselves could be added later without a schema change.
+A benefit level. Fixed set at launch (Silver/Gold/Platinum) but modeled as a table, not an enum, so tiers themselves could be added later without a schema change. Also carries its auto-tier-earning criteria directly (merged from a formerly-separate `TierCriteria` table — see design note below).
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | UUID (PK) | |
 | `name` | string | "Silver", "Gold", "Platinum" |
-| `rank` | int | ordering, e.g. Silver=1, Gold=2, Platinum=3 — used to determine "higher/lower" for upgrade/downgrade validation |
+| `rank` | int | ordering, e.g. Silver=1, Gold=2, Platinum=3 — used to determine "higher/lower" for paid-upgrade validation (target tier must outrank current) |
+| `min_order_count` | int, nullable | auto-tier criterion: "more than X orders" |
+| `min_order_value_monthly` | decimal, nullable | auto-tier criterion: total order value in a month |
+| `cohort_tags` | string[], nullable | auto-tier criterion: matches against user's cohort tags |
+| `criteria_match_mode` | enum(`ANY`, `ALL`) | whether meeting any one of the above conditions qualifies, or all must be met |
 | `is_active` | boolean | |
 
-#### `TierCriteria`
-Rules used to auto-compute a user's tier (FR-11).
+*A user qualifies for a tier if their computed stats satisfy that tier's criteria fields. The engine evaluates all active tiers ordered by rank and assigns the highest-rank tier the user qualifies for (see §4 Tier Evaluation Engine).*
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | UUID (PK) | |
-| `tier_id` | UUID (FK → Tier) | which tier this criteria set unlocks |
-| `min_order_count` | int, nullable | e.g. "more than X orders" |
-| `min_order_value_monthly` | decimal, nullable | e.g. total order value in a month |
-| `cohort_tags` | string[], nullable | matches against user's cohort tags |
-| `match_mode` | enum(`ANY`, `ALL`) | whether meeting any one condition qualifies, or all must be met |
-| `is_active` | boolean | |
-
-*A user qualifies for a tier if their computed stats satisfy this tier's criteria. The engine evaluates all active tiers' criteria and assigns the highest-rank tier the user qualifies for (see §4 Tier Evaluation Engine).*
+> **Design note — merged, not split, for now:** Criteria was originally modeled as a separate `TierCriteria` table (1 tier → many criteria rows) to support multiple independent rule sets per tier (e.g. "10 orders OR VIP cohort" as two separately-evaluable options). Since the requirement as specified is **one rule set per tier**, this is a genuine 1:1 relationship — normalizing it into its own table added a join with no benefit. Merged directly into `Tier` as nullable columns instead. **If multiple alternative rule sets per tier become a real need later, this can be split back out** — it's a non-breaking migration (extract columns into a new table, backfill one row per tier).
 
 #### `Benefit`
 A configurable perk definition (admin-managed), independent of any specific tier — a "catalog" of benefit instances.
@@ -153,14 +138,18 @@ A configurable perk definition (admin-managed), independent of any specific tier
 | `is_active` | boolean | |
 
 #### `TierBenefit`
-Join table — which Benefits apply to which Tier.
+Join table — which Benefits apply to which Tier, optionally scoped to a specific Plan.
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | UUID (PK) | |
 | `tier_id` | UUID (FK → Tier) | |
 | `benefit_id` | UUID (FK → Benefit) | |
-| `is_active` | boolean | allows disabling a benefit for a tier without deleting the Benefit definition |
+| `plan_id` | UUID (FK → Plan), **nullable** | `NULL` = **base benefit**, applies to this tier regardless of which plan the member is on. A specific value = **additional** benefit, unlocked only when this tier is combined with that specific plan (e.g. Yearly-Gold gets extra perks Monthly-Gold doesn't). |
+| `is_active` | boolean | allows disabling a benefit for a tier (or tier+plan combo) without deleting the Benefit definition |
+
+- **Resolution rule:** for a member on `(planId, tierId)`, fetch all active rows where `tier_id = tierId AND (plan_id IS NULL OR plan_id = planId)`. This gives every plan the tier's base benefits, plus any plan-specific extras layered on top.
+- This is the **only** place Plan and Tier intersect for entitlement purposes — `Plan` and `Tier` themselves stay two independent, uncoupled entities (mirrors how billing platforms like Stripe keep "what you're billed for" separate from "what you're entitled to" — see tech-spec discussion history).
 
 *Traces to: FR-3, FR-4, FR-5*
 
@@ -197,7 +186,7 @@ The core subscription record for a user.
 
 - **Uniqueness constraint:** at most one row with `status = ACTIVE` per `user_id` (Assumption 7).
 
-*Traces to: FR-7, FR-8, FR-9, FR-10, FR-12, FR-13, FR-14*
+*Traces to: FR-7, FR-8, FR-9, FR-11, FR-12, FR-13, FR-14*
 
 #### `MembershipAuditLog`
 Append-only log of all Plan/Tier changes, per NFR "Auditability."
@@ -206,11 +195,28 @@ Append-only log of all Plan/Tier changes, per NFR "Auditability."
 |---|---|---|
 | `id` | UUID (PK) | |
 | `membership_id` | UUID (FK → Membership) | |
-| `event_type` | enum(`SUBSCRIBED`, `PLAN_CHANGED`, `TIER_AUTO_UPGRADED`, `TIER_PAID_UPGRADED`, `TIER_DOWNGRADED`, `CANCELLED`, `EXPIRED`) | |
+| `event_type` | enum(`SUBSCRIBED`, `PLAN_CHANGED`, `TIER_AUTO_UPGRADED`, `TIER_PAID_UPGRADED`, `CANCELLED`, `EXPIRED`) | |
 | `before_state` | JSON | |
 | `after_state` | JSON | |
 | `triggered_by` | enum(`USER`, `SYSTEM`, `ADMIN`) | |
 | `created_at` | timestamp | |
+
+#### `PaymentRecord`
+Tracks Razorpay payment attempts against a Membership, primarily for idempotency (see §6) and financial traceability. One `Membership` can have multiple `PaymentRecord`s over its lifetime (initial subscribe, later a plan-change upgrade, later a tier upgrade).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID (PK) | |
+| `membership_id` | UUID (FK → Membership), nullable | null until the Membership exists (e.g. during initial `subscribe`, before confirm) |
+| `action_type` | enum(`SUBSCRIBE`, `PLAN_CHANGE`, `TIER_UPGRADE`) | which flow created this payment |
+| `razorpay_order_id` | string | |
+| `razorpay_payment_id` | string, nullable | populated on confirm |
+| `amount` | decimal | |
+| `currency` | string | |
+| `status` | enum(`CREATED`, `CONFIRMED`, `FAILED`) | |
+| `created_at` / `updated_at` | timestamp | |
+
+- **Uniqueness constraint:** `razorpay_payment_id` — this is the idempotency guarantee referenced in §6 and §9.4: a confirm request retried with the same `razorpay_payment_id` is a no-op (existing record returned), never a duplicate mutation.
 
 #### `TierCache` (Redis — not relational)
 
@@ -218,8 +224,8 @@ Append-only log of all Plan/Tier changes, per NFR "Auditability."
 |---|---|---|
 | `tier:{userId}` | `{ "tierId": "...", "computedAt": "...", "source": "AUTO\|PAID_UPGRADE" }` | fixed 1 hour |
 
-- Written on every fresh computation (subscribe, cache-miss read, paid upgrade, downgrade).
-- Explicitly deleted/overwritten (not waited-out) on paid upgrade and voluntary downgrade — see §4.
+- Written on every fresh computation (subscribe, cache-miss read, paid upgrade).
+- Explicitly deleted/overwritten (not waited-out) on paid upgrade — see §4.
 
 ---
 
@@ -228,6 +234,14 @@ Append-only log of all Plan/Tier changes, per NFR "Auditability."
 All endpoints are prefixed `/api/v1`. User-facing endpoints require an authenticated user
 session; Admin endpoints require an authenticated admin role. Internal endpoints are
 callable only by other trusted internal services (e.g. Checkout).
+
+### 3.0 How `userId` reaches the service (auth model)
+
+This applies to every endpoint below and isn't repeated per-endpoint:
+
+- **User-facing endpoints** (`/membership/*`, `/plans`, `/tiers`): the client sends a bearer token (JWT) obtained at login. Spring Security's auth filter validates it and extracts `userId` from the token claims into the security context. Controllers read it via `@AuthenticationPrincipal` — **`userId` is never a query param, path param, or request body field on these endpoints.** A user can only ever act on their own Membership; there is no "act on behalf of another user" path here.
+- **Admin endpoints** (`/admin/*`): same JWT-based auth, but the token must carry an admin role/scope, checked via Spring Security method/role-based authorization.
+- **Internal, service-to-service endpoints** (`/internal/*`, e.g. `GET /internal/benefits/{userId}`): these ARE called with `userId` as an explicit path param, because the caller (Checkout Service) is asking on behalf of whichever user is checking out. The caller itself is authenticated as a **trusted service** (internal API key, mTLS, or a service-level JWT) — not as that user. This endpoint must never be reachable from a public/client-facing network path — only from other backend services.
 
 ### 3.1 Plans
 
@@ -259,12 +273,12 @@ callable only by other trusted internal services (e.g. Checkout).
 |---|---|---|---|
 | GET | `/tiers` | List all tiers with their current benefit configuration | FR-6 |
 | GET | `/membership/benefits` | Get the caller's current tier + benefits | FR-4 |
-| POST | `/admin/tiers` | Create a tier | FR-3 |
+| POST | `/admin/tiers` | Create a tier (name, rank, and its criteria fields — `minOrderCount`, `minOrderValueMonthly`, `cohortTags`, `criteriaMatchMode` — all live directly on the Tier payload, since criteria is a 1:1 property of a tier, not a separate resource) | FR-3, FR-11 |
+| PATCH | `/admin/tiers/{tierId}` | Edit a tier, including its criteria fields | FR-3, FR-11 |
 | POST | `/admin/tiers/{tierId}/benefits` | Attach a Benefit to a Tier | FR-3 |
 | PATCH | `/admin/tiers/{tierId}/benefits/{tierBenefitId}` | Enable/disable/edit a tier's benefit | FR-3 |
 | POST | `/admin/benefits` | Create a new Benefit definition (`type`, `value`, `scope`) | FR-3 |
 | PATCH | `/admin/benefits/{benefitId}` | Edit a Benefit definition | FR-3 |
-| POST | `/admin/tiers/{tierId}/criteria` | Set/update auto-tier criteria for a tier | FR-11 |
 | POST | `/admin/tier-upgrade-prices` | Create a `(plan, fromTier, toTier)` price entry | FR-9 |
 | PATCH | `/admin/tier-upgrade-prices/{id}` | Edit/disable a price entry | FR-9 |
 
@@ -273,11 +287,15 @@ callable only by other trusted internal services (e.g. Checkout).
 | Method | Path | Purpose | Traces to |
 |---|---|---|---|
 | GET | `/membership` | Get caller's current membership (plan, tier, expiry) | FR-13 |
-| POST | `/membership/subscribe` | Subscribe to a plan (creates payment order, then Membership on success) | FR-7 |
-| POST | `/membership/change-plan` | Change to a different plan | FR-8 |
-| POST | `/membership/upgrade-tier` | Pay to upgrade to a specific target tier | FR-9 |
-| POST | `/membership/downgrade-tier` | Voluntarily downgrade to a lower tier | FR-10 |
-| POST | `/membership/cancel` | Cancel membership immediately | FR-12 |
+| POST | `/membership/subscribe` | Create a Razorpay order for a plan (step 1 of 2) | FR-7 |
+| POST | `/membership/subscribe/confirm` | Verify payment, create the Membership (step 2 of 2) | FR-7 |
+| POST | `/membership/change-plan` | Create a Razorpay order for a plan upgrade, `amountPayable` after day-value credit (step 1 of 2) | FR-8 |
+| POST | `/membership/change-plan/confirm` | Verify payment, update `plan_id`/`expiry_date` (step 2 of 2) | FR-8 |
+| POST | `/membership/upgrade-tier` | Create a Razorpay order for a tier upgrade (step 1 of 2) | FR-9 |
+| POST | `/membership/upgrade-tier/confirm` | Verify payment, update `current_tier_id`/`tier_source` (step 2 of 2) | FR-9 |
+| POST | `/membership/cancel` | Cancel membership immediately (no payment step — free action) | FR-12 |
+
+> **Pattern:** `subscribe`, `change-plan`, and `upgrade-tier` are all paid actions and follow the identical two-step shape — `POST /membership/{action}` creates a Razorpay order and returns it; `POST /membership/{action}/confirm` verifies the payment signature and applies the resulting state change in one transaction. `cancel` is the only lifecycle action with no payment step.
 
 **`POST /membership/subscribe` request/response:**
 ```json
@@ -292,12 +310,8 @@ callable only by other trusted internal services (e.g. Checkout).
   "keyId": "rzp_test_xxx"
 }
 ```
-Client completes payment via Razorpay Checkout SDK using the returned order, then calls:
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/membership/subscribe/confirm` | Verify Razorpay payment signature, create Membership |
-
+**`POST /membership/subscribe/confirm` request/response:**
 ```json
 // Request
 {
@@ -318,17 +332,29 @@ Client completes payment via Razorpay Checkout SDK using the returned order, the
 }
 ```
 
+**`POST /membership/change-plan` request/response:**
+```json
+// Request
+{ "newPlanId": "plan_yearly" }
+
+// Response
+{
+  "razorpayOrderId": "order_xyz",
+  "amountPayable": 1400,
+  "credit": 599,
+  "currency": "INR",
+  "keyId": "rzp_test_xxx"
+}
+```
+`change-plan/confirm` follows the same request/response shape as `subscribe/confirm` (payment fields in, updated Membership out) — see §5.6 for the full flow and credit formula.
+
 **`POST /membership/upgrade-tier` request:**
 ```json
 { "targetTierId": "tier_gold" }
 ```
-Follows the same two-step pattern (create Razorpay order → confirm) as subscribe, since it's also a paid action. On confirm, `current_tier_id` is set to `targetTierId`, `tier_source = PAID_UPGRADE`, and the tier cache is invalidated immediately.
+`upgrade-tier/confirm` follows the same two-step pattern as subscribe. On confirm, `current_tier_id` is set to `targetTierId`, `tier_source = PAID_UPGRADE`, and the tier cache is invalidated immediately.
 
-**`POST /membership/downgrade-tier` request:**
-```json
-{ "targetTierId": "tier_silver" }
-```
-No payment involved — takes effect immediately, cache invalidated immediately.
+> **No `downgrade-tier` endpoint.** Voluntary tier downgrade was considered and deliberately removed from scope — see requirements.md FR-9 note and Decisions Log #10. Given no refunds are issued anywhere in this system, a downgrade action has no coherent meaning: it would either discard already-paid money (for a paid-upgraded tier) or be silently undone by the next lazy auto-evaluation (§4) since the user's underlying order history hasn't changed. A member who wants fewer benefits cancels (FR-12) or lets their membership lapse (FR-14).
 
 ### 3.4 Internal APIs (service-to-service)
 
@@ -336,10 +362,13 @@ No payment involved — takes effect immediately, cache invalidated immediately.
 |---|---|---|---|
 | GET | `/internal/benefits/{userId}` | Called by Checkout Service to fetch a user's currently applicable benefits, to apply at checkout | FR-5 |
 
+> **Note — `plan_id` is not a request parameter, on either this or `GET /membership/benefits`.** (`userId` reaches this endpoint as shown in §3.0.) `plan_id` specifically is derived server-side from the caller's active `Membership` row (which stores `plan_id` and `current_tier_id` together), not supplied by the client. This avoids a client ever sending a stale/incorrect plan for benefit resolution — see §4 for the exact `resolveTier()` + benefit-fetch flow that uses it internally.
+
 **`GET /internal/benefits/{userId}` response:**
 ```json
 {
   "hasActiveMembership": true,
+  "planId": "plan_yearly",
   "tierId": "tier_gold",
   "benefits": [
     { "type": "FREE_DELIVERY", "value": { "minOrderValue": 0 } },
@@ -347,7 +376,7 @@ No payment involved — takes effect immediately, cache invalidated immediately.
   ]
 }
 ```
-This is the read path that triggers lazy tier evaluation/caching (see §4). If `hasActiveMembership` is `false` (no active Membership, or expired), Checkout applies no membership benefits (FR-5).
+`planId` is included in the **response** (for the caller's/Checkout's visibility and logging) even though it was never in the **request** — it's read from the Membership row, not accepted as input. This is the read path that triggers lazy tier evaluation/caching (see §4). If `hasActiveMembership` is `false` (no active Membership, or expired), Checkout applies no membership benefits (FR-5).
 
 ---
 
@@ -396,23 +425,18 @@ function resolveTier(userId):
 ### 4.2 `computeTierFromCriteria(stats, cohort)`
 
 - Iterate all active Tiers ordered by `rank` descending.
-- For each tier, evaluate its `TierCriteria` row(s) against `stats`/`cohort` using `match_mode` (`ANY`/`ALL`).
+- For each tier, evaluate its own `min_order_count` / `min_order_value_monthly` / `cohort_tags` fields against `stats`/`cohort` using its `criteria_match_mode` (`ANY`/`ALL`).
 - Return the **highest-rank** tier whose criteria is satisfied. If none match, default to the lowest-rank active tier (e.g. Silver) as the floor for any active member.
 
 ### 4.3 Cache invalidation (bypass paths)
 
-Two write paths **do not wait for TTL** — they invalidate/overwrite the cache synchronously as part of the same transaction:
+One write path **does not wait for TTL** — it invalidates/overwrites the cache synchronously as part of the same transaction:
 
 | Action | Effect |
 |---|---|
 | `POST /membership/upgrade-tier` (confirm) | `current_tier_id = target`, `tier_source = PAID_UPGRADE`, cache overwritten immediately |
-| `POST /membership/downgrade-tier` | `current_tier_id = target`, `tier_source = AUTO` (a voluntary downgrade drops back to auto-eval eligibility going forward), cache overwritten immediately |
 
-> Design note: setting `tier_source = AUTO` after a voluntary downgrade means the user could
-> auto-upgrade right back up on the next lazy evaluation if they still meet the higher
-> tier's criteria. This mirrors real-world intent (you can't "downgrade" your actual
-> purchase history) — flagging this as a behavior worth confirming with product before
-> implementation, since a user might expect the downgrade to "stick."
+> There is no voluntary-downgrade write path in this design (see requirements.md FR-9 note, Decisions Log #10) — an earlier draft of this spec included one, but it was dropped: reverting `tier_source` to `AUTO` after a downgrade would let the very next lazy evaluation silently move the user right back up if their order history still qualified, since a downgrade action doesn't change actual purchase history. Combined with the no-refund policy, "downgrade" had no coherent behavior to define, so it was removed rather than shipped as a confusing feature.
 
 ---
 
@@ -436,9 +460,9 @@ Two write paths **do not wait for TTL** — they invalidate/overwrite the cache 
 ### 5.2 Checkout-time benefit application (FR-5)
 
 1. Checkout Service, while building the cart total, calls `GET /internal/benefits/{userId}`.
-2. Membership Service calls `resolveTier(userId)` (cache hit in the common case).
+2. Membership Service loads the user's active `Membership` row (source of `planId`), then calls `resolveTier(userId)` (cache hit in the common case) to get `tierId`. Neither value is supplied by the caller — both are derived from server-side state.
 3. If no active membership → `{ hasActiveMembership: false }`, Checkout applies nothing.
-4. If active → fetch that tier's active `TierBenefit`s, apply `scope` filtering, return benefit list.
+4. If active → fetch that tier's active `TierBenefit`s **for the member's plan** (`tier_id = tierId AND (plan_id IS NULL OR plan_id = planId)`), apply `scope` filtering, return benefit list.
 5. Checkout applies FREE_DELIVERY / DISCOUNT_PERCENT to eligible line items per the returned scope; EARLY_ACCESS/PRIORITY_SUPPORT are entitlement flags read by their respective features, not by Checkout.
 
 ### 5.3 Paid Tier Upgrade (FR-9)
@@ -450,30 +474,36 @@ Two write paths **do not wait for TTL** — they invalidate/overwrite the cache 
 5. Client → `POST /membership/upgrade-tier/confirm {...payment fields...}`.
 6. On verified success: update `current_tier_id`, `tier_source=PAID_UPGRADE`; invalidate/overwrite cache immediately; write audit log (`TIER_PAID_UPGRADED`).
 
-### 5.4 Voluntary Downgrade (FR-10)
+> Note: there is no corresponding "downgrade" flow — see §4.3 and requirements.md FR-9 note.
 
-1. Client → `POST /membership/downgrade-tier { targetTierId }`.
-2. Service validates: active membership; `targetTierId.rank < currentTier.rank`.
-3. Update `current_tier_id = targetTierId`, `tier_source = AUTO`; invalidate/overwrite cache immediately; write audit log (`TIER_DOWNGRADED`). No payment/refund logic involved.
-
-### 5.5 Cancel Membership (FR-12)
+### 5.4 Cancel Membership (FR-12)
 
 1. Client → `POST /membership/cancel`.
 2. Service sets `status = CANCELLED` on the active Membership. No refund logic, no proration.
 3. Delete/invalidate the tier cache entry for this user (so a stale cached tier doesn't leak into `resolveTier` returning `hasActiveMembership: false` inconsistently — the membership status check on the DB row is the actual source of truth for "active or not," cache is only ever for computed tier value).
 4. Write audit log (`CANCELLED`).
 
-### 5.6 Expiry (FR-14)
+### 5.5 Expiry (FR-14)
 
 1. Scheduled job (frequency: hourly or daily — implementation detail, not user-facing) queries `Membership WHERE status='ACTIVE' AND expiry_date < now()`.
 2. For each: set `status = EXPIRED`; write audit log (`EXPIRED`).
 3. No charge attempted (no auto-renew per FR-14). No notification sent (out of scope per Decisions Log #7).
 
-### 5.7 Change Plan (FR-8)
+### 5.6 Change Plan — Upgrade Only (FR-8)
 
 1. Client → `POST /membership/change-plan { newPlanId }`.
-2. If new plan's price differs from a straightforward swap, service creates a payment order for any required adjustment (exact proration logic: **flagged as an open design question**, see §7).
-3. On success: update `plan_id`, recompute `expiry_date` from `now + newPlan.duration_days`. `current_tier_id`/`tier_source` are **not** touched — tier is independent of plan.
+2. Service validates: active membership exists; `newPlan.price > currentPlan.price` (upgrade-only) — else `400 Bad Request`.
+3. Service computes:
+   ```
+   remainingDays = ceil((membership.expiry_date - now) in days)
+   oldDailyRate  = currentPlan.price / currentPlan.duration_days
+   credit        = remainingDays * oldDailyRate
+   amountPayable = newPlan.price - credit   // always > 0 for a genuine upgrade — see §2/FR-8 note
+   ```
+4. Service creates a Razorpay Order for `amountPayable`, returns to client (same two-step create-order → confirm pattern as §5.1/§5.3).
+5. Client completes payment, calls `POST /membership/change-plan/confirm {...payment fields...}`.
+6. On verified success (single transaction): `plan_id = newPlanId`, `expiry_date = now + newPlan.duration_days` (a full fresh duration — remaining old-plan days are converted to price credit only, not carried forward as extra time). `current_tier_id`/`tier_source` are **not** touched — tier is independent of plan. Write audit log (`PLAN_CHANGED`), including `credit` and `amountPayable` in `before_state`/`after_state` for financial traceability.
+7. Payment idempotency (§6) applies identically to this flow.
 
 ---
 
@@ -485,8 +515,8 @@ Two write paths **do not wait for TTL** — they invalidate/overwrite the cache 
 | Razorpay webhook/confirm called twice for the same payment (retry) | Idempotency: confirm endpoints check if a Membership/upgrade already exists for that `razorpayPaymentId` before creating a duplicate; safe to return the existing result |
 | Payment fails or signature verification fails | No state mutation; `402 Payment Required` with reason; no Membership/upgrade is created |
 | Upgrade requested to a tier with no configured price for the user's plan | `404 Not Found` — "upgrade path unavailable" |
-| Upgrade/downgrade requested to the same tier the user already has | `400 Bad Request` |
-| Downgrade requested to a *higher* tier via the downgrade endpoint (misuse) | `400 Bad Request` — must use `upgrade-tier` |
+| Change-plan requested to a plan with equal or lower price than current | `400 Bad Request` — "downgrade not supported, let current plan expire and resubscribe" |
+| Upgrade-tier requested to the same tier the user already has, or a lower tier | `400 Bad Request` |
 | Concurrent requests racing to mutate the same Membership (e.g. cancel + upgrade at once) | DB-level optimistic locking (`updated_at`/version column) on `Membership`; losing request gets `409 Conflict`, client retries |
 | Order Service or Cohort Service unavailable during tier recomputation | Fall back to the **last cached/known tier** rather than failing the read entirely (degrade gracefully — checkout must not break because tier computation failed); log the failure for alerting |
 | Cache (Redis) unavailable | Fall back to computing directly from DB every time (slower but correct); do not fail requests outright |
@@ -497,10 +527,7 @@ Two write paths **do not wait for TTL** — they invalidate/overwrite the cache 
 
 These surfaced while writing this spec and aren't answered by `requirements.md` — worth a quick decision before implementation starts:
 
-1. **Change-Plan proration:** FR-8 says "complete any required payment adjustment" but the exact proration formula (e.g. mid-cycle Monthly→Yearly switch) isn't defined. Needs a decision: full new-plan price, prorated credit, or flat fee?
-2. **Voluntary downgrade + auto re-upgrade:** per §4.3, setting `tier_source=AUTO` after a downgrade means the user could be auto-upgraded right back on the next lazy read if their order history still qualifies. Confirm this is the intended behavior.
-3. **Multiple active TierCriteria per tier:** if a tier has more than one `TierCriteria` row (e.g. one for orders, one for cohort), is satisfying *any* row enough, or does `match_mode` apply *across* rows too? Current design assumes `match_mode` is per-row (fields within one row), and multiple rows for the same tier are OR'd together — needs confirmation.
-4. **Grace/floor tier for zero-history users:** confirmed default is "lowest active tier" (e.g. Silver) — worth an explicit product sign-off since it wasn't stated in requirements.md.
+1. **Grace/floor tier for zero-history users:** confirmed default is "lowest active tier" (e.g. Silver) — worth an explicit product sign-off since it wasn't stated in requirements.md.
 
 ---
 
@@ -509,19 +536,18 @@ These surfaced while writing this spec and aren't answered by `requirements.md` 
 | Requirements Doc Section | Tech Spec Section |
 |---|---|
 | FR-1, FR-2 (Plans) | §3.1 Plans API |
-| FR-3, FR-4, FR-5 (Benefits) | §2.2 Benefit/TierBenefit entities, §3.2 API, §5.2 Checkout flow |
+| FR-3, FR-4, FR-5 (Benefits) | §2 Benefit/TierBenefit entities, §3.2 API, §5.2 Checkout flow |
 | FR-6 (Get plans & tiers) | §3.1, §3.2 |
 | FR-7 (Subscribe) | §5.1 |
-| FR-8 (Change plan) | §5.7 |
-| FR-9 (Paid tier upgrade) | §2.2 TierUpgradePrice, §5.3 |
-| FR-10 (Voluntary downgrade) | §5.4 |
+| FR-8 (Change plan) | §5.6 |
+| FR-9 (Paid tier upgrade) | §2 TierUpgradePrice, §5.3 |
 | FR-11 (Auto tier assignment) | §4 Tier Evaluation Engine |
-| FR-12 (Cancel) | §5.5 |
+| FR-12 (Cancel) | §5.4 |
 | FR-13 (Track membership) | §3.3 `GET /membership` |
-| FR-14 (Expiry) | §5.6 |
-| NFR: Auditability | §2.2 MembershipAuditLog |
+| FR-14 (Expiry) | §5.5 |
+| NFR: Auditability | §2 MembershipAuditLog |
 | NFR: Idempotency | §6 Error Handling |
-| NFR: Cache (fixed 1h TTL) | §2.2 TierCache, §4 |
+| NFR: Cache (fixed 1h TTL) | §2 TierCache, §4 |
 
 ---
 
@@ -570,7 +596,7 @@ firstclub-membership-service/
 │   │   │   │       ├── MembershipStatus.java         # ACTIVE, CANCELLED, EXPIRED
 │   │   │   │       └── TierSource.java                # AUTO, PAID_UPGRADE
 │   │   │   │
-│   │   │   ├── plan/                                  # traces to FR-1, FR-2 / §2.2 Plan / §3.1
+│   │   │   ├── plan/                                  # traces to FR-1, FR-2 / §2 Plan / §3.1
 │   │   │   │   ├── controller/
 │   │   │   │   │   ├── PlanController.java            # GET /plans
 │   │   │   │   │   └── PlanAdminController.java        # POST/PATCH/DELETE /admin/plans
@@ -585,28 +611,31 @@ firstclub-membership-service/
 │   │   │   │   │   └── UpdatePlanRequest.java
 │   │   │   │   └── mapper/PlanMapper.java              # MapStruct: entity <-> dto
 │   │   │   │
-│   │   │   ├── tier/                                   # traces to §2.2 Tier, TierCriteria / §3.2
+│   │   │   ├── tier/                                   # traces to §2 Tier (incl. merged criteria fields) / §3.2
 │   │   │   │   ├── controller/
 │   │   │   │   │   ├── TierController.java             # GET /tiers
-│   │   │   │   │   └── TierAdminController.java        # POST /admin/tiers, /criteria
+│   │   │   │   │   └── TierAdminController.java        # POST /admin/tiers, PATCH /admin/tiers/{tierId}
+│   │   │   │   │                                        # (both incl. criteria fields)
 │   │   │   │   ├── service/
 │   │   │   │   │   ├── TierService.java
 │   │   │   │   │   └── impl/TierServiceImpl.java
 │   │   │   │   ├── repository/
-│   │   │   │   │   ├── TierRepository.java
-│   │   │   │   │   └── TierCriteriaRepository.java
+│   │   │   │   │   └── TierRepository.java
 │   │   │   │   ├── entity/
-│   │   │   │   │   ├── Tier.java
-│   │   │   │   │   └── TierCriteria.java
+│   │   │   │   │   └── Tier.java                        # includes min_order_count, min_order_value_monthly,
+│   │   │   │   │                                          # cohort_tags, criteria_match_mode
 │   │   │   │   ├── dto/
 │   │   │   │   │   ├── TierResponse.java
-│   │   │   │   │   └── TierCriteriaRequest.java
+│   │   │   │   │   ├── CreateTierRequest.java
+│   │   │   │   │   └── UpdateTierRequest.java
 │   │   │   │   └── mapper/TierMapper.java
 │   │   │   │
-│   │   │   ├── benefit/                                # traces to FR-3, FR-4 / §2.2 Benefit, TierBenefit
+│   │   │   ├── benefit/                                # traces to FR-3, FR-4 / §2 Benefit, TierBenefit
 │   │   │   │   ├── controller/
 │   │   │   │   │   ├── BenefitController.java          # GET /membership/benefits
-│   │   │   │   │   └── BenefitAdminController.java     # POST /admin/benefits, tier-benefits
+│   │   │   │   │   └── BenefitAdminController.java     # POST/PATCH /admin/benefits,
+│   │   │   │   │                                        # POST /admin/tiers/{tierId}/benefits,
+│   │   │   │   │                                        # PATCH /admin/tiers/{tierId}/benefits/{tierBenefitId}
 │   │   │   │   ├── service/
 │   │   │   │   │   ├── BenefitService.java
 │   │   │   │   │   └── impl/BenefitServiceImpl.java
@@ -618,22 +647,27 @@ firstclub-membership-service/
 │   │   │   │   │   └── TierBenefit.java
 │   │   │   │   ├── dto/
 │   │   │   │   │   ├── BenefitResponse.java
-│   │   │   │   │   └── CreateBenefitRequest.java
+│   │   │   │   │   ├── CreateBenefitRequest.java
+│   │   │   │   │   ├── UpdateBenefitRequest.java
+│   │   │   │   │   ├── AttachBenefitToTierRequest.java   # includes optional planId (base vs plan-specific — §2 TierBenefit)
+│   │   │   │   │   └── UpdateTierBenefitRequest.java
 │   │   │   │   └── mapper/BenefitMapper.java
 │   │   │   │
-│   │   │   ├── pricing/                                # traces to FR-9 / §2.2 TierUpgradePrice
-│   │   │   │   ├── controller/TierUpgradePriceAdminController.java
+│   │   │   ├── pricing/                                # traces to FR-9 / §2 TierUpgradePrice
+│   │   │   │   ├── controller/TierUpgradePriceAdminController.java  # POST/PATCH /admin/tier-upgrade-prices
 │   │   │   │   ├── service/
 │   │   │   │   │   ├── TierUpgradePriceService.java
 │   │   │   │   │   └── impl/TierUpgradePriceServiceImpl.java
 │   │   │   │   ├── repository/TierUpgradePriceRepository.java
 │   │   │   │   ├── entity/TierUpgradePrice.java
-│   │   │   │   └── dto/TierUpgradePriceRequest.java
+│   │   │   │   └── dto/
+│   │   │   │       ├── CreateTierUpgradePriceRequest.java
+│   │   │   │       └── UpdateTierUpgradePriceRequest.java
 │   │   │   │
-│   │   │   ├── membership/                             # traces to FR-7,8,9,10,12,13,14 / §5 flows
+│   │   │   ├── membership/                             # traces to FR-7,8,9,11,12,13,14 / §5 flows
 │   │   │   │   ├── controller/
-│   │   │   │   │   └── MembershipController.java       # subscribe, change-plan, upgrade,
-│   │   │   │   │                                        # downgrade, cancel, GET /membership
+│   │   │   │   │   └── MembershipController.java       # GET /membership; subscribe(+/confirm),
+│   │   │   │   │                                        # change-plan(+/confirm), upgrade-tier(+/confirm), cancel
 │   │   │   │   ├── service/
 │   │   │   │   │   ├── MembershipService.java
 │   │   │   │   │   └── impl/MembershipServiceImpl.java  # orchestrates payment + tier engine
@@ -642,17 +676,17 @@ firstclub-membership-service/
 │   │   │   │   ├── dto/
 │   │   │   │   │   ├── SubscribeRequest.java
 │   │   │   │   │   ├── ChangePlanRequest.java
+│   │   │   │   │   ├── ChangePlanQuoteResponse.java       # razorpayOrderId + amountPayable + credit (§3.3)
 │   │   │   │   │   ├── UpgradeTierRequest.java
-│   │   │   │   │   ├── DowngradeTierRequest.java
-│   │   │   │   │   ├── PaymentConfirmRequest.java
+│   │   │   │   │   ├── PaymentConfirmRequest.java         # shared shape for all three /confirm endpoints
 │   │   │   │   │   └── MembershipResponse.java
 │   │   │   │   ├── mapper/MembershipMapper.java
 │   │   │   │   └── validator/
-│   │   │   │       └── TierTransitionValidator.java     # rank checks for upgrade/downgrade
+│   │   │   │       └── TierTransitionValidator.java     # rank check for upgrade-tier (target must outrank current)
 │   │   │   │
 │   │   │   ├── evaluation/                             # traces to FR-11 / §4 Tier Evaluation Engine
 │   │   │   │   ├── TierEvaluationEngine.java            # resolveTier() — the core algorithm
-│   │   │   │   ├── TierCriteriaMatcher.java             # computeTierFromCriteria()
+│   │   │   │   ├── TierCriteriaMatcher.java             # computeTierFromCriteria(), reads Tier's own fields
 │   │   │   │   ├── cache/
 │   │   │   │   │   ├── TierCacheService.java            # get/set/invalidate, wraps Redis
 │   │   │   │   │   └── TierCacheEntry.java              # cache value DTO
@@ -667,10 +701,11 @@ firstclub-membership-service/
 │   │   │   │   ├── dto/
 │   │   │   │   │   ├── PaymentOrderResponse.java
 │   │   │   │   │   └── PaymentConfirmation.java
-│   │   │   │   └── entity/PaymentRecord.java             # tracks razorpayOrderId/paymentId
-│   │   │   │                                              # for idempotency (§6)
+│   │   │   │   ├── entity/PaymentRecord.java              # tracks razorpayOrderId/paymentId
+│   │   │   │   │                                            # for idempotency (§6)
+│   │   │   │   └── repository/PaymentRecordRepository.java
 │   │   │   │
-│   │   │   ├── audit/                                   # traces to §2.2 MembershipAuditLog / NFR
+│   │   │   ├── audit/                                   # traces to §2 MembershipAuditLog / NFR
 │   │   │   │   ├── AuditLogService.java
 │   │   │   │   ├── entity/MembershipAuditLog.java
 │   │   │   │   ├── repository/MembershipAuditLogRepository.java
@@ -691,7 +726,7 @@ firstclub-membership-service/
 │   │   │   │       └── InternalBenefitController.java     # GET /internal/benefits/{userId}
 │   │   │   │
 │   │   │   └── scheduler/
-│   │   │       └── MembershipExpiryJob.java               # traces to FR-14 / §5.6
+│   │   │       └── MembershipExpiryJob.java               # traces to FR-14 / §5.5
 │   │   │
 │   │   └── resources/
 │   │       ├── application.yml
@@ -700,7 +735,7 @@ firstclub-membership-service/
 │   │       ├── application-prod.yml
 │   │       └── db/migration/                              # Flyway
 │   │           ├── V1__create_plan_table.sql
-│   │           ├── V2__create_tier_and_criteria_tables.sql
+│   │           ├── V2__create_tier_table.sql
 │   │           ├── V3__create_benefit_and_tier_benefit_tables.sql
 │   │           ├── V4__create_tier_upgrade_price_table.sql
 │   │           ├── V5__create_membership_table.sql
@@ -727,18 +762,19 @@ Cross-checking that every entity and endpoint from earlier sections has an expli
 | From §2 / §3 | Lives in |
 |---|---|
 | `Plan` entity + `/plans`, `/admin/plans` | `plan/` |
-| `Tier`, `TierCriteria` + `/tiers`, `/admin/tiers` | `tier/` |
+| `Tier` (incl. merged criteria fields) + `/tiers`, `/admin/tiers` | `tier/` |
 | `Benefit`, `TierBenefit` + `/membership/benefits`, `/admin/benefits` | `benefit/` |
 | `TierUpgradePrice` + `/admin/tier-upgrade-prices` | `pricing/` |
-| `Membership` + `/membership/*` (subscribe, change-plan, upgrade, downgrade, cancel) | `membership/` |
+| `Membership` + `/membership/*` (subscribe, change-plan, upgrade-tier, cancel) | `membership/` |
 | `MembershipAuditLog` | `audit/` |
+| `PaymentRecord` | `payment/` |
 | `TierCache` (Redis) + `resolveTier()` engine (§4) | `evaluation/` |
 | Razorpay order creation + signature verification (§5.1, §5.3) | `payment/` |
 | Order Service / Cohort Service reads (Assumption 3) | `client/order/`, `client/cohort/` |
 | `GET /internal/benefits/{userId}` (§3.4) | `internal/` |
-| Expiry scheduled job (§5.6) | `scheduler/` |
+| Expiry scheduled job (§5.5) | `scheduler/` |
 
-No entity or endpoint from §2/§3 is missing a package. ✅
+No entity or endpoint from §2/§3 is missing a package. ✅ (Verified down to the DTO level for §3.2/§3.3 admin and lifecycle endpoints — every POST/PATCH has a corresponding request DTO, not just a controller placeholder.)
 
 ### 9.4 Conventions used
 
