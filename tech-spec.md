@@ -1,7 +1,7 @@
 # FirstClub Membership Program — Technical Specification
 
 **Status:** v1 — Draft
-**Companion doc:** `requirements.md` (v1, Finalized) — every section here traces back to an FR/NFR from that doc
+**Companion doc:** `requirements.md` (v1, Finalized) — every section here traces back to an Functional Requirements (FR)/Non-Functional Requirements (NFR) from that doc
 **Last updated:** 2026-08-13
 
 ---
