@@ -15,52 +15,45 @@ APIs to (a) the client apps (web/mobile) and (b) other internal services (Order 
 Checkout Service). It owns its own datastore and does not directly own Users, Orders, or
 Cohorts — those are read via internal APIs from their owning services.
 
-```
-                         ┌────────────────────┐
-                         │   Client (App/Web)  │
-                         └─────────┬───────────┘
-                                   │ REST (HTTPS)
-                                   ▼
-┌──────────────────────────────────────────────────────────┐
-│                    Membership Service                      │
-│                                                              │
-│  ┌───────────┐  ┌───────────┐  ┌────────────────────────┐ │
-│  │  Plan API  │  │ Tier/     │  │ Subscription Lifecycle │ │
-│  │            │  │ Benefit   │  │ API (subscribe/cancel/ │ │
-│  │            │  │ Admin API │  │ upgrade)               │ │
-│  └───────────┘  └───────────┘  └────────────────────────┘ │
-│                                                              │
-│  ┌────────────────────────────────────────────────────┐   │
-│  │        Tier Evaluation Engine (lazy + cache)         │   │
-│  └────────────────────────────────────────────────────┘   │
-│                          │                                  │
-│                          ▼                                  │
-│                 ┌─────────────────┐                         │
-│                 │  Cache (Redis)   │  key: tier:{userId}    │
-│                 │  TTL: 1 hour     │  fixed, hardcoded       │
-│                 └─────────────────┘                         │
-│                                                              │
-│                 ┌─────────────────┐                         │
-│                 │  Primary DB      │                        │
-│                 │  (Postgres)      │                        │
-│                 └─────────────────┘                         │
-└───────────────────┬──────────────────┬──────────────────────┘
-                     │                  │
-       ┌─────────────▼───┐    ┌─────────▼──────────┐
-       │  Order Service    │    │  Razorpay (test)    │
-       │  (order count/    │    │  Payment Gateway    │
-       │   value, via API) │    │                      │
-       └───────────────────┘    └──────────────────────┘
-                     │
-       ┌─────────────▼───┐
-       │ User/Cohort       │
-       │ Service (reads    │
-       │ cohort_id/tags)   │
-       └───────────────────┘
+```mermaid
+flowchart TB
+    Client["Client<br/>(App / Web)"]
+    Checkout["Checkout Service"]
 
-Checkout Service → calls Membership Service's
-"GET /internal/benefits/{userId}" at checkout time (FR-5)
+    subgraph MS["Membership Service"]
+        direction TB
+        PlanAPI["Plan API"]
+        TierAPI["Tier / Benefit<br/>Admin API"]
+        SubAPI["Subscription Lifecycle API<br/>(subscribe / cancel / upgrade)"]
+        Engine["Tier Evaluation Engine<br/>(lazy + cache)"]
+        Cache[("Cache — Redis<br/>key: tier:{userId}<br/>TTL: 1 hour, fixed")]
+        DB[("Primary DB<br/>Postgres")]
+
+        SubAPI --> Engine
+        Engine --> Cache
+        PlanAPI --> DB
+        TierAPI --> DB
+        SubAPI --> DB
+        Engine --> DB
+    end
+
+    OrderSvc["Order Service<br/>(order count / value, via API)"]
+    CohortSvc["User / Cohort Service<br/>(reads cohort_id / cohort_tags)"]
+    Razorpay["Razorpay (test mode)<br/>Payment Gateway"]
+
+    Client -->|REST / HTTPS| MS
+    Checkout -->|"GET /internal/benefits/{userId}<br/>at checkout time — FR-5"| SubAPI
+    Engine -->|order stats| OrderSvc
+    Engine -->|cohort tags| CohortSvc
+    SubAPI -->|payment| Razorpay
+
+    classDef darkBox fill:#0a2d52,stroke:#04182e,stroke-width:3px,color:#ffffff;
+    class Client,Checkout,PlanAPI,TierAPI,SubAPI,Engine,Cache,DB,OrderSvc,CohortSvc,Razorpay darkBox;
+
+    style MS fill:none,stroke:#0a2d52,stroke-width:2px,color:#0a2d52
 ```
+
+> **Diagram note:** `Order Service` and `User/Cohort Service` are both called independently by the Membership Service (via the Tier Evaluation Engine, §4) — they don't call each other. `Checkout Service` is a *consumer* of this service (calls in), not a dependency it calls out to.
 
 ### 1.2 Key architectural decisions (traced to requirements)
 
