@@ -43,6 +43,26 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+         <!-- JPA/Hibernate: maps entities to DB tables, generates repository queries. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+
+          <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+          <!-- Spring Boot 4 requires this starter explicitly; Flyway no longer auto-configures just from the flyway-core jar being present. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+
+
         <!-- JUnit, Spring test utilities, and assertions. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
