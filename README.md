@@ -30,10 +30,9 @@ After Java 21 and Maven are installed and available in a new terminal:
 mvn spring-boot:run
 ```
 
-Then open these URLs:
+Then open the URL:
 
-- `http://localhost:8080/api/v1/ping` returns `{ "status": "ok" }`.
-- `http://localhost:8080/actuator/health` returns the application health.
+- `http://localhost:8080/api/v1/health` returns `{ "status": "ok" }`.
 
 ## What each dependency does
 
