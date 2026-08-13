@@ -26,12 +26,10 @@ flowchart TB
         PlanAPI["Plan API"]
         TierAPI["Tier / Benefit Admin API"]
         SubAPI["Subscription Lifecycle API"]
-        Engine["Tier Evaluation Engine (lazy + cache)"]
-        Cache[("Cache - Redis, TTL 1h fixed")]
+        Engine["Initial Tier Assignment"]
         DB[("Primary DB - Postgres")]
  
         SubAPI --> Engine
-        Engine --> Cache
         PlanAPI --> DB
         TierAPI --> DB
         SubAPI --> DB
@@ -51,22 +49,22 @@ flowchart TB
     SubAPI -->|payment| Razorpay
  
     classDef darkBox fill:#0a2d52,stroke:#04182e,stroke-width:3px,color:#ffffff;
-    class Client,Checkout,PlanAPI,TierAPI,SubAPI,Engine,Cache,DB,OrderSvc,CohortSvc,Razorpay darkBox;
+    class Client,Checkout,PlanAPI,TierAPI,SubAPI,Engine,DB,OrderSvc,CohortSvc,Razorpay darkBox;
  
     style MS fill:none,stroke:#0a2d52,stroke-width:2px
 ```
  
 
-> **Diagram note:** `Order Service` and `User/Cohort Service` are both called independently by the Membership Service (via the Tier Evaluation Engine, §4) — they don't call each other. `Checkout Service` is a *consumer* of this service (calls in), not a dependency it calls out to.
+> **Diagram note:** `Order Service` and `User/Cohort Service` are called independently by the Membership Service only while assigning the initial Tier at subscription (§4). `Checkout Service` is a *consumer* of this service (calls in), not a dependency it calls out to.
 
 ### 1.2 Key architectural decisions (traced to requirements)
 
 | Decision | Why | Traces to |
 |---|---|---|
-| Tier computed lazily, cached in Redis with fixed 1h TTL, not a batch cron job | Avoids scanning entire member base on a schedule; recompute only happens when actually needed | FR-11, Decisions Log #1 |
-| Paid upgrade bypasses cache and writes-through immediately; **voluntary tier downgrade is not offered** | Cache bypass: explicit user action must reflect instantly. No downgrade: given the no-refund policy, a downgrade action has no coherent meaning — see FR-9 note | FR-9 |
+| Tier is computed once at subscription from current Order/Cohort data and stored on Membership | Keeps the first phase simple while assigning the correct tier from a user's existing history. Dynamic re-evaluation is deferred. | FR-7, FR-11 |
+| Paid upgrade directly replaces the stored tier; **voluntary tier downgrade is not offered** | The change is immediate and remains until cancellation or expiry. | FR-9 |
 | No refund logic anywhere in this service | Simplifies cancel to a pure status change, and is also why voluntary tier downgrade was dropped entirely (see above) | FR-12, Decisions Log #4, #10 |
-| Benefits stored as structured, typed rows (not hardcoded columns) | Admin needs to configure benefit types/values without a deploy | FR-3, Assumption 2 |
+| Benefits stored as structured rows with a string `type` (not a database enum or hardcoded columns) | New types never require a database migration. Launch validation and consumer behavior support the four initial types; future behavior still needs application work. | FR-3, Assumption 2 |
 | Tier-upgrade pricing stored as a matrix table keyed by (plan_id, from_tier, to_tier) | Price varies by both plan and tier-pair | FR-9, Assumption 4 |
 | Order count/value and cohort read via API from external services, not duplicated | Single source of truth; Membership Service doesn't own Orders/Cohorts | Assumption 3 |
 | One active Membership per user (DB-level uniqueness) | No stacked memberships allowed | Assumption 7 |
@@ -119,7 +117,7 @@ A benefit level. Fixed set at launch (Silver/Gold/Platinum) but modeled as a tab
 | `criteria_match_mode` | enum(`ANY`, `ALL`) | whether meeting any one of the above conditions qualifies, or all must be met |
 | `is_active` | boolean | |
 
-*A user qualifies for a tier if their computed stats satisfy that tier's criteria fields. The engine evaluates all active tiers ordered by rank and assigns the highest-rank tier the user qualifies for (see §4 Tier Evaluation Engine).*
+*At subscription, the service evaluates all active tiers ordered by rank and assigns the highest-rank tier whose criteria match the user's current stats (see §4).*
 
 > **Design note — merged, not split, for now:** Criteria was originally modeled as a separate `TierCriteria` table (1 tier → many criteria rows) to support multiple independent rule sets per tier (e.g. "10 orders OR VIP cohort" as two separately-evaluable options). Since the requirement as specified is **one rule set per tier**, this is a genuine 1:1 relationship — normalizing it into its own table added a join with no benefit. Merged directly into `Tier` as nullable columns instead. **If multiple alternative rule sets per tier become a real need later, this can be split back out** — it's a non-breaking migration (extract columns into a new table, backfill one row per tier).
 
@@ -129,7 +127,7 @@ A configurable perk definition (admin-managed), independent of any specific tier
 | Field | Type | Notes |
 |---|---|---|
 | `id` | UUID (PK) | |
-| `type` | enum(`FREE_DELIVERY`, `DISCOUNT_PERCENT`, `EARLY_ACCESS`, `PRIORITY_SUPPORT`) | launch set, extensible (Assumption 2) |
+| `type` | varchar/string | At launch, API validation permits `FREE_DELIVERY`, `DISCOUNT_PERCENT`, `EARLY_ACCESS`, and `PRIORITY_SUPPORT`. New types need no schema migration, but must be implemented by each consumer before being accepted and given business effect. |
 | `value` | JSON | shape depends on `type` — e.g. `{"min_order_value": 499}` for FREE_DELIVERY, `{"percent": 10}` for DISCOUNT_PERCENT |
 | `scope` | JSON, nullable | e.g. `{"category_ids": [...]}` or `{"item_ids": [...]}` — null means unscoped/global |
 | `is_active` | boolean | |
@@ -174,14 +172,14 @@ The core subscription record for a user.
 | `id` | UUID (PK) | |
 | `user_id` | UUID | FK to external User |
 | `plan_id` | UUID (FK → Plan) | |
-| `current_tier_id` | UUID (FK → Tier) | the tier currently in effect (auto or paid) |
-| `tier_source` | enum(`AUTO`, `PAID_UPGRADE`) | determines whether lazy auto-eval is allowed to override it downward (FR-11) |
+| `current_tier_id` | UUID (FK → Tier) | tier currently in effect, assigned at subscription or replaced by a paid upgrade |
+| `tier_source` | enum(`AUTO`, `PAID_UPGRADE`) | records whether the stored tier was assigned from history or a paid upgrade |
 | `status` | enum(`ACTIVE`, `CANCELLED`, `EXPIRED`) | |
 | `start_date` | timestamp | |
 | `expiry_date` | timestamp | |
 | `created_at` / `updated_at` | timestamp | |
 
-- **Uniqueness constraint:** at most one row with `status = ACTIVE` per `user_id` (Assumption 7).
+- **Uniqueness constraint:** at most one row with `status = ACTIVE` per `user_id` (Assumption 7). Before a subscribe check, the service updates any stale `ACTIVE` row with `expiry_date <= now()` to `EXPIRED`, then performs the active-membership check. This keeps the stored status correct and allows immediate re-subscription after expiry.
 
 *Traces to: FR-7, FR-8, FR-9, FR-11, FR-12, FR-13, FR-14*
 
@@ -192,7 +190,7 @@ Append-only log of all Plan/Tier changes, per NFR "Auditability."
 |---|---|---|
 | `id` | UUID (PK) | |
 | `membership_id` | UUID (FK → Membership) | |
-| `event_type` | enum(`SUBSCRIBED`, `PLAN_CHANGED`, `TIER_AUTO_UPGRADED`, `TIER_PAID_UPGRADED`, `CANCELLED`, `EXPIRED`) | |
+| `event_type` | enum(`SUBSCRIBED`, `PLAN_CHANGED`, `TIER_PAID_UPGRADED`, `CANCELLED`, `EXPIRED`) | |
 | `before_state` | JSON | |
 | `after_state` | JSON | |
 | `triggered_by` | enum(`USER`, `SYSTEM`, `ADMIN`) | |
@@ -215,14 +213,7 @@ Tracks Razorpay payment attempts against a Membership, primarily for idempotency
 
 - **Uniqueness constraint:** `razorpay_payment_id` — this is the idempotency guarantee referenced in §6 and §9.4: a confirm request retried with the same `razorpay_payment_id` is a no-op (existing record returned), never a duplicate mutation.
 
-#### `TierCache` (Redis — not relational)
-
-| Key | Value | TTL |
-|---|---|---|
-| `tier:{userId}` | `{ "tierId": "...", "computedAt": "...", "source": "AUTO\|PAID_UPGRADE" }` | fixed 1 hour |
-
-- Written on every fresh computation (subscribe, cache-miss read, paid upgrade).
-- Explicitly deleted/overwritten (not waited-out) on paid upgrade — see §4.
+> **Deferred:** Redis tier caching and dynamic tier re-evaluation are not part of this phase. They can be added later without changing the `Membership` API, using `current_tier_id` as the current source of truth.
 
 ---
 
@@ -349,9 +340,9 @@ This applies to every endpoint below and isn't repeated per-endpoint:
 ```json
 { "targetTierId": "tier_gold" }
 ```
-`upgrade-tier/confirm` follows the same two-step pattern as subscribe. On confirm, `current_tier_id` is set to `targetTierId`, `tier_source = PAID_UPGRADE`, and the tier cache is invalidated immediately.
+`upgrade-tier/confirm` follows the same two-step pattern as subscribe. On confirm, `current_tier_id` is set to `targetTierId` and `tier_source = PAID_UPGRADE`.
 
-> **No `downgrade-tier` endpoint.** Voluntary tier downgrade was considered and deliberately removed from scope — see requirements.md FR-9 note and Decisions Log #10. Given no refunds are issued anywhere in this system, a downgrade action has no coherent meaning: it would either discard already-paid money (for a paid-upgraded tier) or be silently undone by the next lazy auto-evaluation (§4) since the user's underlying order history hasn't changed. A member who wants fewer benefits cancels (FR-12) or lets their membership lapse (FR-14).
+> **No `downgrade-tier` endpoint.** Voluntary tier downgrade was deliberately removed from scope because paid upgrade fees are non-refundable. A member who wants fewer benefits cancels (FR-12) or lets their membership lapse (FR-14).
 
 ### 3.4 Internal APIs (service-to-service)
 
@@ -359,7 +350,7 @@ This applies to every endpoint below and isn't repeated per-endpoint:
 |---|---|---|---|
 | GET | `/internal/benefits/{userId}` | Called by Checkout Service to fetch a user's currently applicable benefits, to apply at checkout | FR-5 |
 
-> **Note — `plan_id` is not a request parameter, on either this or `GET /membership/benefits`.** (`userId` reaches this endpoint as shown in §3.0.) `plan_id` specifically is derived server-side from the caller's active `Membership` row (which stores `plan_id` and `current_tier_id` together), not supplied by the client. This avoids a client ever sending a stale/incorrect plan for benefit resolution — see §4 for the exact `resolveTier()` + benefit-fetch flow that uses it internally.
+> **Note — `plan_id` is not a request parameter, on either this or `GET /membership/benefits`.** (`userId` reaches this endpoint as shown in §3.0.) `plan_id` is derived server-side from the caller's active `Membership` row, which also stores `current_tier_id`; neither is supplied by the client.
 
 **`GET /internal/benefits/{userId}` response:**
 ```json
@@ -373,50 +364,21 @@ This applies to every endpoint below and isn't repeated per-endpoint:
   ]
 }
 ```
-`planId` is included in the **response** (for the caller's/Checkout's visibility and logging) even though it was never in the **request** — it's read from the Membership row, not accepted as input. This is the read path that triggers lazy tier evaluation/caching (see §4). If `hasActiveMembership` is `false` (no active Membership, or expired), Checkout applies no membership benefits (FR-5).
+`planId` is included in the **response** (for the caller's/Checkout's visibility and logging) even though it was never in the **request** — it is read from the Membership row, not accepted as input. If `hasActiveMembership` is `false` (no active Membership, or expired), Checkout applies no membership benefits (FR-5).
 
 ---
 
-## 4. Tier Evaluation Engine (Lazy + Cached)
+## 4. Initial Tier Assignment (Subscription Time Only)
 
-Central to this system — implemented once, called from every read path (`GET /membership`,
-`GET /membership/benefits`, `GET /internal/benefits/{userId}`, and internally at subscribe time).
+This phase computes a Tier only after a successful subscription payment. Read paths (`GET /membership`, `GET /membership/benefits`, and `GET /internal/benefits/{userId}`) use the Tier already stored on the Membership.
 
-### 4.1 `resolveTier(userId)` — pseudocode
+### 4.1 `assignInitialTier(userId)` — pseudocode
 
 ```
-function resolveTier(userId):
-    membership = getActiveMembership(userId)
-    if membership is null:
-        return NO_ACTIVE_MEMBERSHIP
-
-    if membership.tier_source == PAID_UPGRADE:
-        # Paid upgrades are sticky — never silently overridden by auto-eval.
-        # Cache still used to avoid repeated DB reads, but source of truth
-        # is the Membership row itself, not recomputation.
-        cached = redis.get("tier:" + userId)
-        if cached and cached.tierId == membership.current_tier_id:
-            return cached
-        cached = { tierId: membership.current_tier_id, computedAt: now(), source: PAID_UPGRADE }
-        redis.set("tier:" + userId, cached, ttl=1h)
-        return cached
-
-    cached = redis.get("tier:" + userId)
-    if cached exists and not expired:
-        return cached
-
-    # Cache miss or expired -> recompute
+function assignInitialTier(userId):
     stats = fetchUserStats(userId)   # order count, order value (via Order Service API)
     cohort = fetchUserCohort(userId) # via User/Cohort Service API
-    newTierId = computeTierFromCriteria(stats, cohort)  # highest-rank tier whose criteria is met
-
-    if newTierId != membership.current_tier_id:
-        updateMembershipTier(membership.id, newTierId, source=AUTO)
-        writeAuditLog(membership.id, TIER_AUTO_UPGRADED, before=membership.current_tier_id, after=newTierId)
-
-    result = { tierId: newTierId, computedAt: now(), source: AUTO }
-    redis.set("tier:" + userId, result, ttl=1h)
-    return result
+    return computeTierFromCriteria(stats, cohort)  # highest qualifying tier
 ```
 
 ### 4.2 `computeTierFromCriteria(stats, cohort)`
@@ -425,21 +387,17 @@ function resolveTier(userId):
 - For each tier, evaluate its own `min_order_count` / `min_order_value_monthly` / `cohort_tags` fields against `stats`/`cohort` using its `criteria_match_mode` (`ANY`/`ALL`).
 - Return the **highest-rank** tier whose criteria is satisfied. If none match, default to the lowest-rank active tier (e.g. Silver) as the floor for any active member.
 
-### 4.3 Cache invalidation (bypass paths)
+### 4.3 Deferred dynamic upgrades
 
-One write path **does not wait for TTL** — it invalidates/overwrites the cache synchronously as part of the same transaction:
-
-| Action | Effect |
-|---|---|
-| `POST /membership/upgrade-tier` (confirm) | `current_tier_id = target`, `tier_source = PAID_UPGRADE`, cache overwritten immediately |
-
-> There is no voluntary-downgrade write path in this design (see requirements.md FR-9 note, Decisions Log #10) — an earlier draft of this spec included one, but it was dropped: reverting `tier_source` to `AUTO` after a downgrade would let the very next lazy evaluation silently move the user right back up if their order history still qualified, since a downgrade action doesn't change actual purchase history. Combined with the no-refund policy, "downgrade" had no coherent behavior to define, so it was removed rather than shipped as a confusing feature.
+No scheduled, lazy, or cache-driven re-evaluation runs in this phase. A later phase may add dynamic upgrades after orders change; it is intentionally not designed or built now.
 
 ---
 
 ## 5. Key Flows
 
 ### 5.1 Subscribe to a Plan (FR-7)
+
+Before this flow checks for an active Membership, it updates any stale row for the user where `status = ACTIVE` and `expiry_date <= now()` to `EXPIRED`, and writes an `EXPIRED` audit log. The status is therefore corrected immediately instead of waiting for the scheduler.
 
 1. Client → `POST /membership/subscribe { planId }`.
 2. Service validates: no existing `ACTIVE` membership for this user (if one exists → 409, points client to `change-plan`).
@@ -448,8 +406,9 @@ One write path **does not wait for TTL** — it invalidates/overwrites the cache
 5. Client → `POST /membership/subscribe/confirm { razorpayOrderId, razorpayPaymentId, razorpaySignature }`.
 6. Service verifies signature server-side against Razorpay.
 7. On success (in a single DB transaction):
+   - Update any stale `ACTIVE` Membership for this user with `expiry_date <= now()` to `EXPIRED`, then confirm that no non-expired active Membership exists. If one exists, do not create a Membership and return `409 Conflict`.
    - Create `Membership` row: `status=ACTIVE`, `start_date=now`, `expiry_date=now+plan.duration_days`, `tier_source=AUTO`.
-   - Call `resolveTier(userId)` to compute and cache the initial tier from existing history.
+   - Call `assignInitialTier(userId)` to compute the initial Tier from existing history, then store it as `current_tier_id` with `tier_source=AUTO`.
    - Write `MembershipAuditLog` (`SUBSCRIBED`).
 8. Return the created Membership to client.
 9. On payment verification failure: no Membership created, return 402 with reason.
@@ -457,7 +416,7 @@ One write path **does not wait for TTL** — it invalidates/overwrites the cache
 ### 5.2 Checkout-time benefit application (FR-5)
 
 1. Checkout Service, while building the cart total, calls `GET /internal/benefits/{userId}`.
-2. Membership Service loads the user's active `Membership` row (source of `planId`), then calls `resolveTier(userId)` (cache hit in the common case) to get `tierId`. Neither value is supplied by the caller — both are derived from server-side state.
+2. Membership Service loads the user's active `Membership` row (source of `planId` and saved `currentTierId`). Neither value is supplied by the caller — both are derived from server-side state.
 3. If no active membership → `{ hasActiveMembership: false }`, Checkout applies nothing.
 4. If active → fetch that tier's active `TierBenefit`s **for the member's plan** (`tier_id = tierId AND (plan_id IS NULL OR plan_id = planId)`), apply `scope` filtering, return benefit list.
 5. Checkout applies FREE_DELIVERY / DISCOUNT_PERCENT to eligible line items per the returned scope; EARLY_ACCESS/PRIORITY_SUPPORT are entitlement flags read by their respective features, not by Checkout.
@@ -469,7 +428,7 @@ One write path **does not wait for TTL** — it invalidates/overwrites the cache
 3. Service creates Razorpay Order for that price, returns to client.
 4. Client completes payment.
 5. Client → `POST /membership/upgrade-tier/confirm {...payment fields...}`.
-6. On verified success: update `current_tier_id`, `tier_source=PAID_UPGRADE`; invalidate/overwrite cache immediately; write audit log (`TIER_PAID_UPGRADED`).
+6. On verified success: update `current_tier_id = targetTierId` and `tier_source=PAID_UPGRADE`; write audit log (`TIER_PAID_UPGRADED`). No automatic re-evaluation changes this Tier in the current phase.
 
 > Note: there is no corresponding "downgrade" flow — see §4.3 and requirements.md FR-9 note.
 
@@ -477,14 +436,15 @@ One write path **does not wait for TTL** — it invalidates/overwrites the cache
 
 1. Client → `POST /membership/cancel`.
 2. Service sets `status = CANCELLED` on the active Membership. No refund logic, no proration.
-3. Delete/invalidate the tier cache entry for this user (so a stale cached tier doesn't leak into `resolveTier` returning `hasActiveMembership: false` inconsistently — the membership status check on the DB row is the actual source of truth for "active or not," cache is only ever for computed tier value).
+3. No cache action is required in this phase because the saved Membership row is the source of truth.
 4. Write audit log (`CANCELLED`).
 
 ### 5.5 Expiry (FR-14)
 
-1. Scheduled job (frequency: hourly or daily — implementation detail, not user-facing) queries `Membership WHERE status='ACTIVE' AND expiry_date < now()`.
-2. For each: set `status = EXPIRED`; write audit log (`EXPIRED`).
-3. No charge attempted (no auto-renew per FR-14). No notification sent (out of scope per Decisions Log #7).
+1. Every active-membership lookup uses `status = 'ACTIVE' AND expiry_date > now()`, including checkout benefit resolution and lifecycle actions. This is the immediate expiry enforcement.
+2. Scheduled job (frequency: hourly or daily — implementation detail, not user-facing) queries `Membership WHERE status='ACTIVE' AND expiry_date <= now()`.
+3. For each: set `status = EXPIRED`; write audit log (`EXPIRED`).
+4. No charge attempted (no auto-renew per FR-14). No notification sent (out of scope per Decisions Log #7).
 
 ### 5.6 Change Plan — Upgrade Only (FR-8)
 
@@ -508,23 +468,21 @@ One write path **does not wait for TTL** — it invalidates/overwrites the cache
 
 | Case | Handling |
 |---|---|
-| Double-subscribe attempt (user already has ACTIVE membership) | `409 Conflict`, response points client to `change-plan` |
+| Re-subscribe after expiry | Before checking for an active membership, update any stale `ACTIVE` Membership with `expiry_date <= now()` to `EXPIRED`; the user can then subscribe normally. |
+| Double-subscribe attempt (user already has a non-expired ACTIVE membership) | `409 Conflict`, response points client to `change-plan` |
 | Razorpay webhook/confirm called twice for the same payment (retry) | Idempotency: confirm endpoints check if a Membership/upgrade already exists for that `razorpayPaymentId` before creating a duplicate; safe to return the existing result |
 | Payment fails or signature verification fails | No state mutation; `402 Payment Required` with reason; no Membership/upgrade is created |
 | Upgrade requested to a tier with no configured price for the user's plan | `404 Not Found` — "upgrade path unavailable" |
 | Change-plan requested to a plan with equal or lower price than current | `400 Bad Request` — "downgrade not supported, let current plan expire and resubscribe" |
 | Upgrade-tier requested to the same tier the user already has, or a lower tier | `400 Bad Request` |
 | Concurrent requests racing to mutate the same Membership (e.g. cancel + upgrade at once) | DB-level optimistic locking (`updated_at`/version column) on `Membership`; losing request gets `409 Conflict`, client retries |
-| Order Service or Cohort Service unavailable during tier recomputation | Fall back to the **last cached/known tier** rather than failing the read entirely (degrade gracefully — checkout must not break because tier computation failed); log the failure for alerting |
-| Cache (Redis) unavailable | Fall back to computing directly from DB every time (slower but correct); do not fail requests outright |
+| Order Service or Cohort Service unavailable during initial tier assignment | Do not create the Membership until the initial Tier can be determined; return a retryable service error. These services are not called on normal reads in this phase. |
 
 ---
 
 ## 7. Open Design Questions (flagged, not yet resolved)
 
-These surfaced while writing this spec and aren't answered by `requirements.md` — worth a quick decision before implementation starts:
-
-1. **Grace/floor tier for zero-history users:** confirmed default is "lowest active tier" (e.g. Silver) — worth an explicit product sign-off since it wasn't stated in requirements.md.
+No open design questions remain for this phase.
 
 ---
 
@@ -538,13 +496,12 @@ These surfaced while writing this spec and aren't answered by `requirements.md` 
 | FR-7 (Subscribe) | §5.1 |
 | FR-8 (Change plan) | §5.6 |
 | FR-9 (Paid tier upgrade) | §2 TierUpgradePrice, §5.3 |
-| FR-11 (Auto tier assignment) | §4 Tier Evaluation Engine |
+| FR-11 (Initial tier assignment) | §4 Initial Tier Assignment |
 | FR-12 (Cancel) | §5.4 |
 | FR-13 (Track membership) | §3.3 `GET /membership` |
 | FR-14 (Expiry) | §5.5 |
 | NFR: Auditability | §2 MembershipAuditLog |
 | NFR: Idempotency | §6 Error Handling |
-| NFR: Cache (fixed 1h TTL) | §2 TierCache, §4 |
 
 ---
 
@@ -570,7 +527,6 @@ firstclub-membership-service/
 │   │   │   │
 │   │   │   ├── config/
 │   │   │   │   ├── SecurityConfig.java          # auth for user/admin/internal routes
-│   │   │   │   ├── RedisConfig.java             # tier cache client + fixed 1h TTL bean
 │   │   │   │   ├── RazorpayConfig.java          # Razorpay client bean, key/secret binding
 │   │   │   │   ├── OpenApiConfig.java           # Swagger/OpenAPI docs
 │   │   │   │   ├── WebClientConfig.java         # HTTP clients for Order/Cohort services
@@ -681,12 +637,9 @@ firstclub-membership-service/
 │   │   │   │   └── validator/
 │   │   │   │       └── TierTransitionValidator.java     # rank check for upgrade-tier (target must outrank current)
 │   │   │   │
-│   │   │   ├── evaluation/                             # traces to FR-11 / §4 Tier Evaluation Engine
-│   │   │   │   ├── TierEvaluationEngine.java            # resolveTier() — the core algorithm
+│   │   │   ├── evaluation/                             # traces to FR-11 / §4 Initial Tier Assignment
+│   │   │   │   ├── InitialTierAssignmentService.java    # computes Tier once at subscription
 │   │   │   │   ├── TierCriteriaMatcher.java             # computeTierFromCriteria(), reads Tier's own fields
-│   │   │   │   ├── cache/
-│   │   │   │   │   ├── TierCacheService.java            # get/set/invalidate, wraps Redis
-│   │   │   │   │   └── TierCacheEntry.java              # cache value DTO
 │   │   │   │   └── dto/UserStatsSnapshot.java           # order count/value + cohort, assembled
 │   │   │   │                                             # from external client calls
 │   │   │   │
@@ -746,9 +699,9 @@ firstclub-membership-service/
 │           │   ├── MembershipServiceImplTest.java          # unit, mocked deps
 │           │   └── MembershipControllerIntegrationTest.java # @SpringBootTest + Testcontainers
 │           ├── evaluation/
-│           │   └── TierEvaluationEngineTest.java            # covers §4 pseudocode branches
+│           │   └── InitialTierAssignmentServiceTest.java    # covers §4 initial assignment
 │           └── support/
-│               ├── TestcontainersConfig.java                 # Postgres + Redis containers
+│               ├── TestcontainersConfig.java                 # Postgres container
 │               └── fixtures/                                  # test data builders
 ```
 
@@ -765,7 +718,7 @@ Cross-checking that every entity and endpoint from earlier sections has an expli
 | `Membership` + `/membership/*` (subscribe, change-plan, upgrade-tier, cancel) | `membership/` |
 | `MembershipAuditLog` | `audit/` |
 | `PaymentRecord` | `payment/` |
-| `TierCache` (Redis) + `resolveTier()` engine (§4) | `evaluation/` |
+| Initial Tier assignment from Order/Cohort data (§4) | `evaluation/` |
 | Razorpay order creation + signature verification (§5.1, §5.3) | `payment/` |
 | Order Service / Cohort Service reads (Assumption 3) | `client/order/`, `client/cohort/` |
 | `GET /internal/benefits/{userId}` (§3.4) | `internal/` |
@@ -787,6 +740,6 @@ No entity or endpoint from §2/§3 is missing a package. ✅ (Verified down to t
 ### 9.5 What's intentionally *not* over-engineered here
 
 - No separate "domain" vs "infrastructure" hexagonal split — for a service this size, feature packages with clean internal layering give most of the same benefit with less ceremony. Worth revisiting only if the service grows significantly or needs to swap persistence technology.
-- No CQRS / separate read-models — the lazy-cache pattern in `evaluation/` already handles the one place where read/write separation actually matters (tier resolution).
+- No CQRS / separate read-models — this first phase reads the saved Membership tier directly, which keeps the service easy to understand.
 
 

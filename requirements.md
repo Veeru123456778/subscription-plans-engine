@@ -34,11 +34,11 @@ configurable per tier by the business, not hardcoded.
 
 These points were not fully specified in the raw requirements and were clarified during review:
 
-1. **Tier evaluation frequency:** Tier is computed **lazily and cached**, not via a batch job. Details in section 4.3, FR-11. TTL is **fixed at 1 hour** for now (not admin-configurable at this stage) — to be revisited later.
-2. **Benefit config structure:** Benefits follow a **structured, admin-configurable schema** — not a fixed enum baked into code. Each Tier has a list of Benefits; each Benefit is defined by a schema of `{type, value, scope, active}` so admins can add/edit/disable benefit instances without a deployment. We start **minimal** with a small set of supported `type`s at launch and the schema is designed to allow new `type`s to be added later without breaking existing config. Initial minimal set: FREE_DELIVERY, DISCOUNT_PERCENT, EARLY_ACCESS, PRIORITY_SUPPORT (flag only). Managed via an admin-only config API.
+1. **Tier evaluation for this phase:** A user's initial Tier is computed once, at successful subscription, from their existing order history, order value, and cohort. The Tier then remains unchanged for that Membership except for an explicit paid tier upgrade. Automatic/dynamic re-evaluation after future orders, Redis tier caching, and automatic tier upgrades are deferred to a later phase.
+2. **Benefit config structure:** Benefits follow a **structured, admin-configurable schema**. Each Tier has a list of Benefits; each Benefit is defined by `{type, value, scope, active}`. `type` is stored as a string, not as a database enum, so adding a future type never requires a database schema migration. At launch, the admin API validates and accepts only `FREE_DELIVERY`, `DISCOUNT_PERCENT`, `EARLY_ACCESS`, and `PRIORITY_SUPPORT` (flag only). A future type still requires application work in every consuming service that must interpret or apply it (for example, Checkout); once that behavior is released, its configuration can be stored without a database change. Managed via an admin-only config API.
 3. **Cohort source:** Cohort membership is provided by an external/existing user-segmentation system; this service only reads a `cohort_id`/`cohort_tags` field on the user, it does not compute cohorts itself.
 4. **Paid tier upgrade pricing:** The price to upgrade a tier is configurable per **(Plan, source Tier → target Tier)** combination — not a single global fee per tier-pair. E.g. Silver→Gold can cost differently for a Monthly member vs. a Yearly member, and Silver→Platinum is its own configurable price point distinct from doing Silver→Gold→Platinum in two steps. Admin manages this as a price matrix/table, editable without code changes.
-5. **Paid tier upgrade validity:** A paid upgrade lasts until the current Membership (Plan) expires or is cancelled — it is not a separate subscription. (No voluntary downgrade path exists — see FR-9 note.)
+5. **Paid tier upgrade validity:** A paid upgrade lasts until the current Membership (Plan) expires or is cancelled — it is not a separate subscription. For this phase, it directly replaces the user's current Tier; no automatic tier re-evaluation runs afterward. (No voluntary downgrade path exists — see FR-9 note.)
 6. ~~Manual downgrade~~ **REMOVED from scope** — see FR-9 note for why a downgrade action doesn't make sense given the no-refund policy.
 7. **One active Membership per user:** A user can have only one active Plan at a time (no stacking Monthly + Yearly).
 8. **Re-subscription:** Since there's no auto-renew, once a Membership expires the user drops to "no active membership" (no default free tier) until they subscribe again.
@@ -76,7 +76,7 @@ Each requirement includes a user story and testable acceptance criteria.
 
 - Acceptance Criteria:
   - Each Tier (Silver/Gold/Platinum) has an independently configurable list of benefits, each defined by a structured schema: `{type, value, scope (optional), active}`.
-  - **Launch scope is minimal** — supported benefit `type`s at launch: Free delivery (with min order value threshold), Extra discount % (global or scoped to specific categories/items), Early access to sales, Priority support (flag only). The schema is designed so additional `type`s can be introduced later purely via configuration/data, without requiring a new code path for every type.
+  - **Launch scope is minimal** — supported benefit `type`s at launch: Free delivery (with min order value threshold), Extra discount % (global or scoped to specific categories/items), Early access to sales, Priority support (flag only). New types do not require a database schema change because `type` is a string, but they do require consumer implementation before they can have business effect; until then, the launch API rejects them.
   - Higher tiers can be configured with cumulative or entirely distinct benefits — the system does not assume higher = strictly more, it just applies whatever is configured.
   - Changes to benefit configuration apply to all members of that tier from that point forward (not retroactively to past orders).
   - Benefit assignment to a Tier can optionally be scoped to a specific Plan. A benefit with no Plan specified is a **base benefit** (applies to that tier on any plan); a benefit scoped to a Plan is an **additional** benefit unlocked only for that Plan+Tier combination (e.g. Yearly-Gold gets more than Monthly-Gold).
@@ -111,8 +111,10 @@ Each requirement includes a user story and testable acceptance criteria.
 
 - Acceptance Criteria:
   - Given a user with no active membership, when they select a Plan and complete payment (Razorpay), then a Membership record is created with `startDate = now`, `expiryDate = now + plan duration`, and status = ACTIVE.
+  - Before checking whether a user already has an active Membership, the service marks any `ACTIVE` Membership whose `expiryDate <= now` as EXPIRED. This allows an expired user to subscribe again immediately, even if the scheduled expiry job has not yet run.
   - The user's initial Tier is computed immediately at subscribe time based on existing order history, order value, and cohort (per Tier Criteria — see FR-11).
   - Given a user who already has an active membership, when they try to subscribe again, then the system rejects the request and instead offers Plan change (see FR-8) — no duplicate/stacked memberships.
+  - Payment confirmation repeats the expiry update and active-membership check inside its transaction before creating a Membership, so a state change between payment-order creation and confirmation cannot create a duplicate active Membership.
   - On payment failure, no Membership is created and the user is informed.
 
 **FR-8: Change Plan (Upgrade Only)**
@@ -133,25 +135,20 @@ Each requirement includes a user story and testable acceptance criteria.
 - Acceptance Criteria:
   - Upgrade pricing is configurable as a **matrix keyed by (Plan, source Tier → target Tier)** — e.g. (Monthly, Silver→Gold), (Yearly, Silver→Gold), (Monthly, Gold→Platinum), (Yearly, Silver→Platinum) can each have distinct, independently configurable prices. Admins manage this matrix without a code deployment; any (Plan, tier-pair) combination not explicitly configured is treated as unavailable for direct paid upgrade.
   - Given an active member below the top tier, when they choose "Upgrade Tier" to a specific target tier and complete payment for the price configured for their (current Plan, current Tier → target Tier), then their Tier is updated immediately to the selected higher tier.
-  - The paid-upgrade tier remains in effect until the Membership expires or is cancelled. (There is no voluntary downgrade path — see note below.)
+  - The paid-upgrade tier remains in effect until the Membership expires or is cancelled. For this phase, it replaces the current Tier and is not subsequently changed by automatic evaluation. (There is no voluntary downgrade path — see note below.)
   - A user cannot "upgrade" to a tier they already have or a lower tier via this flow.
-  - The tier cache (FR-11) is **invalidated and refreshed immediately** on a successful paid upgrade — this does not wait for TTL expiry.
 
-> **Note — Voluntary Tier Downgrade is NOT offered.** This was considered (previously drafted as FR-10) and deliberately dropped. Since paid tier-upgrade fees are non-refundable (Decisions Log #4 principle applied here too) and tier is otherwise auto-earned from real order history, a "downgrade" button doesn't have a coherent meaning: (a) if downgrading a paid-upgraded tier, the user would be discarding money they already paid with nothing given back, and (b) if downgrading an auto-earned tier, the very next lazy tier evaluation (FR-11) would likely just put them right back, since their order history hasn't changed — making the action pointless and confusing. A member who wants fewer benefits can simply cancel (FR-12) or let their membership lapse (FR-14).
+> **Note — Voluntary Tier Downgrade is NOT offered.** Paid tier-upgrade fees are non-refundable, so a downgrade would discard paid value with nothing returned. A member who wants fewer benefits can cancel (FR-12) or let their membership lapse (FR-14).
 
-**FR-11: Automatic Tier Assignment (Lazy, Cached Evaluation)**
-> As a member, I want my tier to automatically go up as I shop more, so that I'm rewarded for my loyalty without having to do anything manually.
+**FR-11: Initial Tier Assignment (Subscription Time Only)**
+> As a new member, I want my Tier to reflect my existing shopping history when I subscribe, so that I receive the correct benefits from the start.
 
-- Design model (confirmed): Tier is **not** computed by a recurring batch job over all members. Instead:
-  - Tier is computed at the moment it's **needed** (e.g. at Plan selection/subscribe time, and any subsequent read of "current tier") and the result is **cached** as `{user_id → tier, computed_at}` with a **fixed TTL of 1 hour** (hardcoded for now, not admin-configurable — may be revisited later).
-  - On a cache hit within TTL, the cached tier is used — no recomputation.
-  - On a cache miss or expired TTL, tier is recomputed fresh from current order count/value/cohort against Tier Criteria, and the cache is refreshed.
 - Acceptance Criteria:
-  - Tier Criteria are configurable per tier and can include: minimum number of orders (in a period), minimum total order value (in a period, e.g. monthly), and/or cohort membership.
-  - Given an active member whose cached tier has expired, when their tier is next read (checkout, "My Membership," etc.) and they now meet a higher tier's criteria, then their Tier is upgraded and re-cached at that point.
-  - Automatic (lazy) evaluation never downgrades a user below a tier they reached via a **paid** upgrade (FR-9) — only Membership expiry/cancellation reduces a paid-upgraded tier (there is no voluntary downgrade path). Lazy evaluation only moves a user up, or up further, based on criteria.
-  - Tier Criteria are configurable by admins without code changes.
-  - **Known trade-off:** Since evaluation is lazy, a user may not be *upgraded* until something actually triggers a read after their cache expires — there is no guarantee of immediate real-time detection the moment they cross a threshold. This is acceptable per product decision. Visibility is handled by FR-13 (member can always pull their latest tier on demand).
+  - Tier Criteria are configurable per tier and can include: minimum number of orders, minimum total order value, and/or cohort membership.
+  - When subscription payment succeeds, the service reads the user's current order statistics and cohort information, selects the highest qualifying Tier, and saves it on the Membership.
+  - If no Tier criteria match, the lowest active Tier (for example, Silver) is assigned.
+  - During this phase, reads such as checkout and "My Membership" return the saved Tier; they do not re-read Order Service or Cohort Service and do not automatically change the Tier.
+  - Automatic/dynamic tier upgrades based on orders placed after subscription are explicitly deferred to a future phase.
 
 **FR-12: Cancel Membership**
 > As a member, I want to cancel my membership, so that I stop being charged and am no longer a member.
@@ -166,14 +163,15 @@ Each requirement includes a user story and testable acceptance criteria.
 
 - Acceptance Criteria:
   - Given an active member, when they view "My Membership," then Plan name, Tier, start date, expiry date, and days remaining are shown.
-  - This read triggers the standard lazy tier-cache logic (FR-11) — if the cache is expired, tier is recomputed fresh at this point, so the user always sees an up-to-date tier here.
+  - This read returns the Tier saved on the Membership. Automatic re-evaluation is out of scope for this phase.
   - Given an expired membership, when the user views their status, then it clearly shows "Expired — no auto-renew" with a prompt to resubscribe.
 
 **FR-14: No auto-renewal / expiry**
 > As a member, I want my membership to simply expire at the end of my billing cycle if I don't renew, so that I'm never charged without my explicit action.
 
 - Acceptance Criteria:
-  - Given a Membership reaches its `expiryDate`, when the scheduled expiry job runs, then status becomes EXPIRED and Tier benefits stop applying.
+  - A Membership is considered active only when `status = ACTIVE` **and** `expiryDate > now`. Every read and benefit-resolution path enforces this condition, so benefits stop applying immediately at expiry even if the scheduled job has not yet run.
+  - Given a Membership reaches its `expiryDate`, when the scheduled expiry job runs, then status becomes EXPIRED.
   - No automatic charge is attempted at cycle end.
 
 ---
@@ -182,12 +180,11 @@ Each requirement includes a user story and testable acceptance criteria.
 
 | Category | Requirement |
 |---|---|
-| **Consistency** | Paid tier upgrade must invalidate the tier cache immediately (no TTL wait). Auto-earned tier changes are eventually-consistent within the 1-hour TTL window — this is an accepted trade-off, not a bug. |
-| **Cache** | Tier cache TTL is **fixed at 1 hour** for now (not admin-configurable at this stage); may be made configurable in a later iteration if needed. |
+| **Consistency** | A successful paid tier upgrade updates the saved Membership Tier immediately. |
 | **Auditability** | All Tier changes (auto, paid-upgrade) and Plan changes must be logged with timestamp, reason/trigger, and before/after state. |
 | **Idempotency** | Payment webhooks (Razorpay) must be handled idempotently to avoid duplicate Membership creation or double tier-upgrades on retry. |
 | **Configurability** | Plans, Tiers, Tier Criteria, and Benefits must all be configurable via admin tooling without a code deployment. |
-| **Scalability** | Since tier evaluation is lazy/on-demand rather than batch, the recompute-and-cache path must be fast enough to run inline on a read (checkout, membership view) without noticeable latency — see Availability row below. |
+| **Scalability** | Checkout-time benefit lookup must return the active Membership's saved Tier and benefits with low latency (<200ms). |
 | **Security** | Payment flows must never expose Razorpay secrets client-side; all tier/benefit mutations require authenticated admin access. |
 | **Availability** | Checkout-time benefit application is on the critical path — target 99.9% availability, low-latency (<200ms) lookup of a user's active benefits. |
 
@@ -206,16 +203,16 @@ Each requirement includes a user story and testable acceptance criteria.
 
 Key decisions made during requirements review, for traceability:
 
-1. **Tier evaluation model:** Lazy, cache-based evaluation with a fixed 1-hour TTL (see FR-11) — not a scheduled batch job.
+1. **Tier evaluation model for this phase:** Compute the initial Tier once at subscription from existing order/cohort data, then store it on Membership. Automatic/dynamic re-evaluation is deferred.
 2. **Benefit types at launch:** Structured, extensible schema; launch set is minimal (Free delivery, Discount %, Early access, Priority support flag) and admin-configurable — see Assumption 2 and FR-3.
 3. **Tier-upgrade notifications:** Not needed for now — covered sufficiently by FR-13's pull-based tier visibility. No separate push-notification requirement.
 4. **Refund policy on cancellation:** No refund in any case. Cancel is a pure status change — see FR-12.
 5. **Paid tier-upgrade pricing model:** Configurable as a matrix keyed by (Plan, source Tier → target Tier) — see Assumption 4 and FR-9.
-6. **Tier-cache TTL:** Fixed at 1 hour for now (not admin-configurable); may be revisited later.
+6. **Dynamic tier re-evaluation:** Deferred to a later phase; no Redis tier cache or automatic upgrade logic is built now.
 7. **Notifications (all types):** Not in scope for this phase — expiry reminders, tier-change alerts, etc. are all deferred. All status is available on-demand via pull (FR-4, FR-13).
 8. **Plan-aware tier benefits:** A Tier's benefit set can vary by Plan (e.g. Yearly-Gold gets more than Monthly-Gold) — base benefits apply regardless of plan, additional benefits can be scoped to a specific plan. See FR-3, FR-5. (Full technical mapping detailed in `tech-spec.md`.)
 9. **Change Plan is upgrade-only, with day-value credit:** Plan switching only allows moving to a strictly more expensive plan; the switch is immediate, with unused days on the current plan converted to a price credit against the new plan (no forfeited value, no negative-payment edge case since it's upgrade-only). See FR-8.
-10. **Voluntary Tier Downgrade removed from scope:** Given no refunds are issued anywhere in this system, a "downgrade tier" action has no coherent meaning — it either discards already-paid money (for a paid-upgraded tier) or gets silently undone by the next auto-evaluation (for an auto-earned tier). Dropped entirely; cancel/lapse are the only ways to reduce benefits. See FR-9 note.
+10. **Voluntary Tier Downgrade removed from scope:** Paid tier-upgrade fees are non-refundable, so a downgrade would discard paid value with nothing returned. Cancel/lapse are the only ways to reduce benefits. See FR-9 note.
 
 ---
 
@@ -232,7 +229,7 @@ Key decisions made during requirements review, for traceability:
 | FR-7 | Subscribe to a plan | Approved |
 | FR-8 | Change plan | Approved |
 | FR-9 | Paid tier upgrade | Approved |
-| FR-11 | Automatic tier assignment (lazy, cached) | Approved |
+| FR-11 | Initial tier assignment at subscription | Approved |
 | FR-12 | Cancel membership | Approved |
 | FR-13 | Track membership & expiry | Approved |
 | FR-14 | No auto-renewal / expiry | Approved |
