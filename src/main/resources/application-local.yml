@@ -1,0 +1,17 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/membership
+    username: membership
+    password: membership
+
+  jpa:
+    # validate, not update/create: Flyway owns the schema. Hibernate only checks
+    # that our entity mappings match what Flyway already created, it never mutates
+    # tables itself. This is the standard pairing for production-grade schema management.
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration

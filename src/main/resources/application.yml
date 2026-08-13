@@ -1,13 +1,19 @@
 spring:
   application:
     name: membership-service
+  profiles:
+    active: local
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  jpa:
+    # OSIV keeps the DB session open through view rendering, which makes it easy to
+    # accidentally trigger lazy-loading queries outside the service layer. Disabling
+    # it forces all data access to happen intentionally, inside @Transactional methods.
+    open-in-view: false
 
 server:
   port: 8080
   shutdown: graceful
-
-spring.lifecycle:
-  timeout-per-shutdown-phase: 20s
 
 management:
   endpoints:

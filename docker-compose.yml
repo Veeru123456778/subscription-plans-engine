@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: membership-postgres
+    environment:
+      POSTGRES_DB: membership
+      POSTGRES_USER: membership
+      POSTGRES_PASSWORD: membership
+    ports:
+      - "5432:5432"
+    volumes:
+      - membership-pgdata:/var/lib/postgresql/data
+
+volumes:
+  membership-pgdata:
