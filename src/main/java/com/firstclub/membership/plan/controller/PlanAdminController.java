@@ -22,7 +22,6 @@ import java.util.UUID;
 // this whole class by URL pattern ("/api/v1/admin/**") in one place.
 @RestController
 @RequestMapping("/api/v1/admin/plans")
-
 public class PlanAdminController {
 
     private final PlanService planService;
@@ -32,18 +31,25 @@ public class PlanAdminController {
     }
 
     @PostMapping
-    public ResponseEntity<PlanResponse> createPlan(@Valid @RequestBody CreatePlanRequest request) {
+    public ResponseEntity<PlanResponse> createPlan(
+            @Valid @RequestBody CreatePlanRequest request
+    ) {
         PlanResponse created = planService.createPlan(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @PatchMapping("/{planId}")
-    public PlanResponse updatePlan(@PathVariable UUID planId, @Valid @RequestBody UpdatePlanRequest request) {
+    public PlanResponse updatePlan(
+            @PathVariable UUID planId,
+            @Valid @RequestBody UpdatePlanRequest request
+    ) {
         return planService.updatePlan(planId, request);
     }
 
     @DeleteMapping("/{planId}")
-    public ResponseEntity<Void> disablePlan(@PathVariable UUID planId) {
+    public ResponseEntity<Void> disablePlan(
+            @PathVariable UUID planId
+    ) {
         planService.disablePlan(planId);
         return ResponseEntity.noContent().build();
     }
