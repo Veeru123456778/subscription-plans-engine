@@ -15,7 +15,10 @@ public interface PlanService {
 
     PlanResponse createPlan(CreatePlanRequest request);
 
-    PlanResponse updatePlan(UUID planId, UpdatePlanRequest request);
+    PlanResponse updatePlan(
+            UUID planId,
+            UpdatePlanRequest request
+    );
 
     void disablePlan(UUID planId);
 }
