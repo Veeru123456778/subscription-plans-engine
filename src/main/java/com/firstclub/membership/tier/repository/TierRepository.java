@@ -17,4 +17,8 @@ public interface TierRepository extends JpaRepository<Tier, UUID> {
     boolean existsByNameIgnoreCase(String name);
 
     boolean existsByRank(Integer rank);
+
+    boolean existsByNameIgnoreCaseAndIdNot(String name, UUID id);
+    
+    boolean existsByRankAndIdNot(Integer rank, UUID id);
 }

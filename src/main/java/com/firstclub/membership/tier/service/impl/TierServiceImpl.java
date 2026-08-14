@@ -55,9 +55,23 @@ public class TierServiceImpl implements TierService {
     @Override
     @Transactional
     public TierResponse updateTier(UUID tierId, UpdateTierRequest request) {
+
         Tier tier = tierRepository.findById(tierId)
                 .orElseThrow(() -> new ResourceNotFoundException("Tier not found: " + tierId));
 
+        if (request.getName() != null && tierRepository.existsByNameIgnoreCaseAndIdNot(request.getName(), tierId)) {
+            throw new ConflictException(
+                    "A tier named '" + request.getName() + "' already exists");
+        }
+
+        if (request.getRank() != null
+                && tierRepository.existsByRankAndIdNot(
+                        request.getRank(), tierId)) {
+            throw new ConflictException(
+                    "Rank " + request.getRank()
+                            + " is already assigned to another tier");
+        }
+      
         if (request.getName() != null) {
             tier.setName(request.getName());
         }
