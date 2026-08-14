@@ -7,8 +7,8 @@ import com.firstclub.membership.plan.entity.Plan;
 import com.firstclub.membership.plan.entity.PlanPrice;
 import com.firstclub.membership.plan.mapper.PlanMapper;
 import com.firstclub.membership.plan.repository.PlanPriceRepository;
-import com.firstclub.membership.plan.service.PlanService;
 import com.firstclub.membership.plan.repository.PlanRepository;
+import com.firstclub.membership.plan.service.PlanService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,21 +44,21 @@ public class PlanServiceImpl implements PlanService {
     public PlanResponse createPlan(CreatePlanRequest request) {
 
         Plan plan = new Plan(
-                request.getName(),
-                request.getRank(),
-                request.getConsecutiveTierUpgradePrice()
+                request.name(),
+                request.rank(),
+                request.consecutiveTierUpgradePrice()
         );
 
         Plan savedPlan = planRepository.save(plan);
 
-        List<PlanPrice> prices = request.getPrices()
+        List<PlanPrice> prices = request.prices()
                 .stream()
                 .map(priceRequest -> new PlanPrice(
                         savedPlan,
-                        priceRequest.getBillingPeriod(),
-                        priceRequest.getDurationDays(),
-                        priceRequest.getPrice(),
-                        priceRequest.getCurrency()
+                        priceRequest.billingPeriod(),
+                        priceRequest.durationDays(),
+                        priceRequest.price(),
+                        priceRequest.currency()
                 ))
                 .toList();
 
@@ -81,10 +81,10 @@ public class PlanServiceImpl implements PlanService {
                         )
                 );
 
-        plan.setName(request.getName());
-        plan.setRank(request.getRank());
+        plan.setName(request.name());
+        plan.setRank(request.rank());
         plan.setConsecutiveTierUpgradePrice(
-                request.getConsecutiveTierUpgradePrice()
+                request.consecutiveTierUpgradePrice()
         );
 
         Plan savedPlan = planRepository.save(plan);
@@ -106,6 +106,7 @@ public class PlanServiceImpl implements PlanService {
                 );
 
         plan.setActive(false);
+
         planRepository.save(plan);
     }
 }
