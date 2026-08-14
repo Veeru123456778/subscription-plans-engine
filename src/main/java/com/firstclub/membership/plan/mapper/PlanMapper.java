@@ -20,12 +20,18 @@ import java.util.List;
 @Component
 public class PlanMapper {
 
+    private final PlanPriceMapper planPriceMapper;
+
+    public PlanMapper(PlanPriceMapper planPriceMapper) {
+        this.planPriceMapper = planPriceMapper;
+    }
+
     public PlanResponse toResponse(
             Plan plan,
             List<PlanPrice> prices
     ) {
         List<PlanPriceResponse> priceResponses = prices.stream()
-                .map(this::toPriceResponse)
+                .map(planPriceMapper::toResponse)
                 .toList();
 
         return new PlanResponse(
@@ -34,16 +40,6 @@ public class PlanMapper {
                 plan.getRank(),
                 plan.getConsecutiveTierUpgradePrice(),
                 priceResponses
-        );
-    }
-
-    private PlanPriceResponse toPriceResponse(PlanPrice planPrice) {
-        return new PlanPriceResponse(
-                planPrice.getId(),
-                planPrice.getBillingPeriod(),
-                planPrice.getDurationDays(),
-                planPrice.getPrice(),
-                planPrice.getCurrency()
         );
     }
 }
