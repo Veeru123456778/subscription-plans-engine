@@ -69,10 +69,10 @@ public class PlanServiceImpl implements PlanService {
     }
 
     @Override
-    public PlanResponse updatePlan(
-            UUID planId,
-            UpdatePlanRequest request
-    ) {
+      public PlanResponse updatePlan(
+                UUID planId,
+                UpdatePlanRequest request
+        ) {
 
         Plan plan = planRepository.findById(planId)
                 .orElseThrow(() ->
@@ -81,11 +81,19 @@ public class PlanServiceImpl implements PlanService {
                         )
                 );
 
-        plan.setName(request.name());
-        plan.setRank(request.rank());
-        plan.setConsecutiveTierUpgradePrice(
-                request.consecutiveTierUpgradePrice()
-        );
+        if (request.name() != null) {
+                plan.setName(request.name());
+        }
+
+        if (request.rank() != null) {
+                plan.setRank(request.rank());
+        }
+
+        if (request.consecutiveTierUpgradePrice() != null) {
+                plan.setConsecutiveTierUpgradePrice(
+                        request.consecutiveTierUpgradePrice()
+                );
+        }
 
         Plan savedPlan = planRepository.save(plan);
 
