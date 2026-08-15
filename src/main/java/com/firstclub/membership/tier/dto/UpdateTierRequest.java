@@ -1,5 +1,6 @@
 package com.firstclub.membership.tier.dto;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.constraints.Min;
 import lombok.Getter;
 import lombok.Setter;
@@ -13,7 +14,7 @@ public class UpdateTierRequest {
     @Min(1)
     private Integer rank;
 
-    private String eligibility;
+    private JsonNode eligibility;
 
     private Boolean active;
 }

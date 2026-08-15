@@ -1,5 +1,6 @@
 package com.firstclub.membership.tier.entity;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -36,7 +37,7 @@ public class Tier {
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
-    private String eligibility;
+    private JsonNode eligibility;
 
     @Column(name = "is_active", nullable = false)
     private boolean active;
@@ -50,7 +51,7 @@ public class Tier {
     public Tier(
             String name,
             Integer rank,
-            String eligibility
+            JsonNode eligibility
     ) {
         this.name = name;
         this.rank = rank;
