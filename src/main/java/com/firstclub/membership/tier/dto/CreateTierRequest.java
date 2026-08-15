@@ -17,6 +17,5 @@ public class CreateTierRequest {
     @Min(1)
     private Integer rank;
 
-    @NotBlank
     private String eligibility;
 }
