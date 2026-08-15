@@ -2,7 +2,7 @@ package com.firstclub.membership.benefit.entity;
 
 import com.firstclub.membership.plan.entity.Plan;
 import com.firstclub.membership.tier.entity.Tier;
-import com.fasterxml.jackson.databind.JsonNode;
+import java.util.Map;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -54,7 +54,7 @@ public class PlanBenefit {
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
-    private JsonNode eligibility;
+    private Map<String, Object> eligibility;
 
     @Column(name = "monthly_limit")
     private Integer monthlyLimit;
@@ -74,7 +74,7 @@ public class PlanBenefit {
             String type,
             BigDecimal value,
             String discountType,
-            JsonNode eligibility,
+            Map<String, Object> eligibility,
             Integer monthlyLimit
     ) {
         this.plan = plan;

@@ -10,10 +10,13 @@ public class TierMapper {
     public TierResponse toResponse(Tier tier) {
         return new TierResponse(
                 tier.getId(),
+                tier.getPlan().getId(),
                 tier.getName(),
                 tier.getRank(),
                 tier.getEligibility(),
-                tier.isActive()
+                tier.isActive(),
+                tier.getCreatedAt(),
+                tier.getUpdatedAt()
         );
     }
 }

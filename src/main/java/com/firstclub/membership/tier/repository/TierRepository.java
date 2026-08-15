@@ -10,16 +10,28 @@ public interface TierRepository extends JpaRepository<Tier, UUID> {
 
     List<Tier> findByActiveTrueOrderByRankDesc();
 
-    boolean existsByNameIgnoreCase(String name);
+    List<Tier> findByPlanIdAndActiveTrueOrderByRankDesc(
+            UUID planId
+    );
 
-    boolean existsByRank(Integer rank);
+    boolean existsByPlanIdAndNameIgnoreCaseAndActiveTrue(
+            UUID planId,
+            String name
+    );
 
-    boolean existsByNameIgnoreCaseAndIdNot(
+    boolean existsByPlanIdAndRankAndActiveTrue(
+            UUID planId,
+            Integer rank
+    );
+
+    boolean existsByPlanIdAndNameIgnoreCaseAndActiveTrueAndIdNot(
+            UUID planId,
             String name,
             UUID id
     );
 
-    boolean existsByRankAndIdNot(
+    boolean existsByPlanIdAndRankAndActiveTrueAndIdNot(
+            UUID planId,
             Integer rank,
             UUID id
     );

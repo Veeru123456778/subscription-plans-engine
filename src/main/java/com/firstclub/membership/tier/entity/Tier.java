@@ -1,11 +1,14 @@
 package com.firstclub.membership.tier.entity;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.firstclub.membership.plan.entity.Plan;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -16,6 +19,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 @Entity
@@ -29,15 +33,19 @@ public class Tier {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(nullable = false, unique = true, length = 50)
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "plan_id", nullable = false)
+    private Plan plan;
+
+    @Column(nullable = false, length = 50)
     private String name;
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false)
     private Integer rank;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
-    private JsonNode eligibility;
+    private Map<String, Object> eligibility;
 
     @Column(name = "is_active", nullable = false)
     private boolean active;
@@ -49,10 +57,12 @@ public class Tier {
     private Instant updatedAt;
 
     public Tier(
+            Plan plan,
             String name,
             Integer rank,
-            JsonNode eligibility
+            Map<String, Object> eligibility
     ) {
+        this.plan = plan;
         this.name = name;
         this.rank = rank;
         this.eligibility = eligibility;

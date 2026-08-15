@@ -1,27 +1,35 @@
 package com.firstclub.membership.membership.evaluation;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import com.firstclub.membership.tier.entity.Tier;
 import org.springframework.stereotype.Component;
+import java.util.Map;
 
 
 @Component
 public class TierEligibilityEvaluator {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public boolean qualifies(
             Tier tier,
             TierEvaluationContext context
     ) {
 
-         JsonNode eligibility = tier.getEligibility();
+         Map<String, Object> eligibilityMap = tier.getEligibility();
 
-        if (eligibility == null
-                || eligibility.isNull()) {
+        if (eligibilityMap == null || eligibilityMap.isEmpty()) {
 
             return true;
         }
 
         try {
+            JsonNode eligibility = objectMapper.valueToTree(eligibilityMap);
+
+            if (eligibility == null || eligibility.isNull()) {
+                return true;
+            }
 
             String matchMode =
                     eligibility

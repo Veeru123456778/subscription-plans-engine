@@ -2,6 +2,8 @@ package com.firstclub.membership.tier.service.impl;
 
 import com.firstclub.membership.common.exception.ConflictException;
 import com.firstclub.membership.common.exception.ResourceNotFoundException;
+import com.firstclub.membership.plan.entity.Plan;
+import com.firstclub.membership.plan.repository.PlanRepository;
 import com.firstclub.membership.tier.dto.CreateTierRequest;
 import com.firstclub.membership.tier.dto.TierResponse;
 import com.firstclub.membership.tier.dto.UpdateTierRequest;
@@ -23,6 +25,7 @@ public class TierServiceImpl implements TierService {
 
     private final TierRepository tierRepository;
     private final TierMapper tierMapper;
+    private final PlanRepository planRepository;
 
     @Override
     @Transactional(readOnly = true)
@@ -36,25 +39,60 @@ public class TierServiceImpl implements TierService {
     }
 
     @Override
-    public TierResponse createTier(CreateTierRequest request) {
+    @Transactional(readOnly = true)
+    public List<TierResponse> getActiveTiersByPlan(UUID planId) {
 
-        if (tierRepository.existsByNameIgnoreCase(request.getName())) {
-            throw new ConflictException(
-                    "A tier named '"
-                            + request.getName()
-                            + "' already exists"
+        if (!planRepository.existsById(planId)) {
+            throw new ResourceNotFoundException(
+                    "Plan not found: " + planId
             );
         }
 
-        if (tierRepository.existsByRank(request.getRank())) {
+        return tierRepository
+                .findByPlanIdAndActiveTrueOrderByRankDesc(planId)
+                .stream()
+                .map(tierMapper::toResponse)
+                .toList();
+    }
+
+    @Override
+    public TierResponse createTier(CreateTierRequest request) {
+
+        Plan plan = planRepository.findById(request.getPlanId())
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Plan not found: " + request.getPlanId()
+                        )
+                );
+
+        if (tierRepository
+                .existsByPlanIdAndNameIgnoreCaseAndActiveTrue(
+                        request.getPlanId(),
+                        request.getName()
+                )) {
+
             throw new ConflictException(
-                    "Rank "
+                    "An active tier named '"
+                            + request.getName()
+                            + "' already exists for this plan"
+            );
+        }
+
+        if (tierRepository
+                .existsByPlanIdAndRankAndActiveTrue(
+                        request.getPlanId(),
+                        request.getRank()
+                )) {
+
+            throw new ConflictException(
+                    "An active tier with rank "
                             + request.getRank()
-                            + " is already assigned to another tier"
+                            + " already exists for this plan"
             );
         }
 
         Tier tier = new Tier(
+                plan,
                 request.getName(),
                 request.getRank(),
                 request.getEligibility()
@@ -78,29 +116,46 @@ public class TierServiceImpl implements TierService {
                         )
                 );
 
-        if (request.getName() != null
-                && tierRepository.existsByNameIgnoreCaseAndIdNot(
-                        request.getName(),
-                        tierId
-                )) {
+        UUID planId = tier.getPlan().getId();
+
+        /*
+         * Only enforce name/rank uniqueness when the tier is
+         * or is becoming ACTIVE.
+         */
+        boolean resultingActive =
+                request.getActive() != null
+                        ? request.getActive()
+                        : tier.isActive();
+
+        if (resultingActive
+                && request.getName() != null
+                && tierRepository
+                        .existsByPlanIdAndNameIgnoreCaseAndActiveTrueAndIdNot(
+                                planId,
+                                request.getName(),
+                                tierId
+                        )) {
 
             throw new ConflictException(
-                    "A tier named '"
+                    "An active tier named '"
                             + request.getName()
-                            + "' already exists"
+                            + "' already exists for this plan"
             );
         }
 
-        if (request.getRank() != null
-                && tierRepository.existsByRankAndIdNot(
-                        request.getRank(),
-                        tierId
-                )) {
+        if (resultingActive
+                && request.getRank() != null
+                && tierRepository
+                        .existsByPlanIdAndRankAndActiveTrueAndIdNot(
+                                planId,
+                                request.getRank(),
+                                tierId
+                        )) {
 
             throw new ConflictException(
-                    "Rank "
+                    "An active tier with rank "
                             + request.getRank()
-                            + " is already assigned to another tier"
+                            + " already exists for this plan"
             );
         }
 

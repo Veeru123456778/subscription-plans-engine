@@ -11,6 +11,8 @@ public interface TierService {
 
     List<TierResponse> getActiveTiers();
 
+    List<TierResponse> getActiveTiersByPlan(UUID planId);
+
     TierResponse createTier(CreateTierRequest request);
 
     TierResponse updateTier(

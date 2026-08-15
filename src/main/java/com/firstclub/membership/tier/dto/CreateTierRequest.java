@@ -1,15 +1,20 @@
 package com.firstclub.membership.tier.dto;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.Map;
+import java.util.UUID;
+
 @Getter
 @Setter
 public class CreateTierRequest {
+
+    @NotNull
+    private UUID planId;
 
     @NotBlank
     private String name;
@@ -18,5 +23,5 @@ public class CreateTierRequest {
     @Min(1)
     private Integer rank;
 
-    private JsonNode eligibility;
+    private Map<String, Object> eligibility;
 }

@@ -1,15 +1,14 @@
 CREATE TABLE tier (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name            VARCHAR(50) NOT NULL UNIQUE,
-    rank            INTEGER NOT NULL UNIQUE,
-    eligibility     JSONB ,
-    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    id UUID PRIMARY KEY,
+    plan_id UUID NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    rank INTEGER NOT NULL,
+    eligibility JSONB,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+
+    CONSTRAINT fk_tier_plan
+        FOREIGN KEY (plan_id)
+        REFERENCES plan(id)
 );
-
-CREATE INDEX idx_tier_is_active
-    ON tier (is_active);
-
-CREATE INDEX idx_tier_rank
-    ON tier (rank);
