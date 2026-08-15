@@ -35,7 +35,7 @@ public class Tier {
     private Integer rank;
 
     @JdbcTypeCode(SqlTypes.JSON)
-    @Column(nullable = false, columnDefinition = "jsonb")
+    @Column(columnDefinition = "jsonb")
     private String eligibility;
 
     @Column(name = "is_active", nullable = false)
