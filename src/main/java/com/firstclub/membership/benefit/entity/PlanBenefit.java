@@ -1,37 +1,62 @@
 package com.firstclub.membership.benefit.entity;
 
+import com.firstclub.membership.plan.entity.Plan;
+import com.firstclub.membership.tier.entity.Tier;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "benefit")
-public class Benefit {
+@Table(name = "plan_benefit")
+@Getter
+@Setter
+@NoArgsConstructor
+public class PlanBenefit {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "plan_id", nullable = false)
+    private Plan plan;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "tier_id")
+    private Tier tier;
+
     @Column(nullable = false, length = 50)
     private String type;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(nullable = false, columnDefinition = "jsonb")
-    private String value;
+    @Column(precision = 19, scale = 2)
+    private BigDecimal value;
+
+    @Column(name = "discount_type", length = 20)
+    private String discountType;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
-    private String scope;
+    private String eligibility;
+
+    @Column(name = "monthly_limit")
+    private Integer monthlyLimit;
 
     @Column(name = "is_active", nullable = false)
     private boolean active;
@@ -42,13 +67,22 @@ public class Benefit {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    protected Benefit() {
-    }
-
-    public Benefit(String type, String value, String scope) {
+    public PlanBenefit(
+            Plan plan,
+            Tier tier,
+            String type,
+            BigDecimal value,
+            String discountType,
+            String eligibility,
+            Integer monthlyLimit
+    ) {
+        this.plan = plan;
+        this.tier = tier;
         this.type = type;
         this.value = value;
-        this.scope = scope;
+        this.discountType = discountType;
+        this.eligibility = eligibility;
+        this.monthlyLimit = monthlyLimit;
         this.active = true;
     }
 
@@ -62,49 +96,5 @@ public class Benefit {
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = Instant.now();
-    }
-
-    public UUID getId() {
-        return id;
-    }
-
-    public String getType() {
-        return type;
-    }
-
-    public void setType(String type) {
-        this.type = type;
-    }
-
-    public String getValue() {
-        return value;
-    }
-
-    public void setValue(String value) {
-        this.value = value;
-    }
-
-    public String getScope() {
-        return scope;
-    }
-
-    public void setScope(String scope) {
-        this.scope = scope;
-    }
-
-    public boolean isActive() {
-        return active;
-    }
-
-    public void setActive(boolean active) {
-        this.active = active;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

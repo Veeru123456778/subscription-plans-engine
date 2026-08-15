@@ -10,12 +10,13 @@ public class BenefitTypeValidator {
 
     private static final Set<String> SUPPORTED_TYPES = Set.of(
             "FREE_DELIVERY",
-            "DISCOUNT_PERCENT",
+            "DISCOUNT",
             "EARLY_ACCESS",
             "PRIORITY_SUPPORT"
     );
 
     public void validate(String type) {
+
         if (type == null || !SUPPORTED_TYPES.contains(type)) {
             throw new BadRequestException(
                     "Unsupported benefit type: " + type
