@@ -3,6 +3,9 @@ spring:
     url: jdbc:postgresql://localhost:5432/membership
     username: membership
     password: membership
+    
+  jackson:
+    time-zone: Asia/Kolkata
 
   jpa:
     # validate, not update/create: Flyway owns the schema. Hibernate only checks
@@ -15,3 +18,4 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+

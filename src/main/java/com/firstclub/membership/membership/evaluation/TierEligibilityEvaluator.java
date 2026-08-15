@@ -4,10 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.firstclub.membership.tier.entity.Tier;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
 
 @Component
 public class TierEligibilityEvaluator {

@@ -67,6 +67,11 @@
             <artifactId>spring-boot-starter-flyway</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
 
         <!-- JUnit, Spring test utilities, and assertions. -->
         <dependency>
@@ -76,6 +81,7 @@
         </dependency>
     </dependencies>
 
+<!-- 
     <build>
         <plugins>
             <plugin>
@@ -83,5 +89,19 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
         </plugins>
-    </build>
-</project>
+    </build> -->
+
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-maven-plugin</artifactId>
+            <configuration>
+                <mainClass>com.firstclub.membership.MembershipServiceApplication</mainClass>
+            </configuration>
+        </plugin>
+    </plugins>
+</build>
+
+</project> 
+
