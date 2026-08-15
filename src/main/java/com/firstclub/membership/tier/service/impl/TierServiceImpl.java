@@ -9,6 +9,7 @@ import com.firstclub.membership.tier.entity.Tier;
 import com.firstclub.membership.tier.mapper.TierMapper;
 import com.firstclub.membership.tier.repository.TierRepository;
 import com.firstclub.membership.tier.service.TierService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,80 +17,105 @@ import java.util.List;
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
+@Transactional
 public class TierServiceImpl implements TierService {
 
     private final TierRepository tierRepository;
     private final TierMapper tierMapper;
 
-    public TierServiceImpl(TierRepository tierRepository, TierMapper tierMapper) {
-        this.tierRepository = tierRepository;
-        this.tierMapper = tierMapper;
-    }
-
     @Override
+    @Transactional(readOnly = true)
     public List<TierResponse> getActiveTiers() {
-        return tierRepository.findByActiveTrueOrderByRankDesc().stream()
+
+        return tierRepository
+                .findByActiveTrueOrderByRankDesc()
+                .stream()
                 .map(tierMapper::toResponse)
                 .toList();
     }
 
     @Override
-    @Transactional
     public TierResponse createTier(CreateTierRequest request) {
+
         if (tierRepository.existsByNameIgnoreCase(request.getName())) {
-            throw new ConflictException("A tier named '" + request.getName() + "' already exists");
+            throw new ConflictException(
+                    "A tier named '"
+                            + request.getName()
+                            + "' already exists"
+            );
         }
+
         if (tierRepository.existsByRank(request.getRank())) {
-            throw new ConflictException("Rank " + request.getRank() + " is already assigned to another tier");
+            throw new ConflictException(
+                    "Rank "
+                            + request.getRank()
+                            + " is already assigned to another tier"
+            );
         }
 
-        Tier tier = new Tier(request.getName(), request.getRank(), request.getCriteriaMatchMode());
-        tier.setMinOrderCount(request.getMinOrderCount());
-        tier.setMinOrderValueMonthly(request.getMinOrderValueMonthly());
-        tier.setCohortTags(request.getCohortTags());
+        Tier tier = new Tier(
+                request.getName(),
+                request.getRank(),
+                request.getEligibility()
+        );
 
-        Tier saved = tierRepository.save(tier);
-        return tierMapper.toResponse(saved);
+        Tier savedTier = tierRepository.save(tier);
+
+        return tierMapper.toResponse(savedTier);
     }
 
     @Override
-    @Transactional
-    public TierResponse updateTier(UUID tierId, UpdateTierRequest request) {
+    public TierResponse updateTier(
+            UUID tierId,
+            UpdateTierRequest request
+    ) {
 
         Tier tier = tierRepository.findById(tierId)
-                .orElseThrow(() -> new ResourceNotFoundException("Tier not found: " + tierId));
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Tier not found: " + tierId
+                        )
+                );
 
-        if (request.getName() != null && tierRepository.existsByNameIgnoreCaseAndIdNot(request.getName(), tierId)) {
+        if (request.getName() != null
+                && tierRepository.existsByNameIgnoreCaseAndIdNot(
+                        request.getName(),
+                        tierId
+                )) {
+
             throw new ConflictException(
-                    "A tier named '" + request.getName() + "' already exists");
+                    "A tier named '"
+                            + request.getName()
+                            + "' already exists"
+            );
         }
 
         if (request.getRank() != null
                 && tierRepository.existsByRankAndIdNot(
-                        request.getRank(), tierId)) {
+                        request.getRank(),
+                        tierId
+                )) {
+
             throw new ConflictException(
-                    "Rank " + request.getRank()
-                            + " is already assigned to another tier");
+                    "Rank "
+                            + request.getRank()
+                            + " is already assigned to another tier"
+            );
         }
-      
+
         if (request.getName() != null) {
             tier.setName(request.getName());
         }
+
         if (request.getRank() != null) {
             tier.setRank(request.getRank());
         }
-        if (request.getMinOrderCount() != null) {
-            tier.setMinOrderCount(request.getMinOrderCount());
+
+        if (request.getEligibility() != null) {
+            tier.setEligibility(request.getEligibility());
         }
-        if (request.getMinOrderValueMonthly() != null) {
-            tier.setMinOrderValueMonthly(request.getMinOrderValueMonthly());
-        }
-        if (request.getCohortTags() != null) {
-            tier.setCohortTags(request.getCohortTags());
-        }
-        if (request.getCriteriaMatchMode() != null) {
-            tier.setCriteriaMatchMode(request.getCriteriaMatchMode());
-        }
+
         if (request.getActive() != null) {
             tier.setActive(request.getActive());
         }

@@ -13,5 +13,8 @@ public interface TierService {
 
     TierResponse createTier(CreateTierRequest request);
 
-    TierResponse updateTier(UUID tierId, UpdateTierRequest request);
+    TierResponse updateTier(
+            UUID tierId,
+            UpdateTierRequest request
+    );
 }

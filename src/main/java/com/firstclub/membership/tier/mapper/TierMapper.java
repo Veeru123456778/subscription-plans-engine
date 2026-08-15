@@ -12,10 +12,8 @@ public class TierMapper {
                 tier.getId(),
                 tier.getName(),
                 tier.getRank(),
-                tier.getMinOrderCount(),
-                tier.getMinOrderValueMonthly(),
-                tier.getCohortTags(),
-                tier.getCriteriaMatchMode()
+                tier.getEligibility(),
+                tier.isActive()
         );
     }
 }

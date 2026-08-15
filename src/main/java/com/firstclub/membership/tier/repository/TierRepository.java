@@ -8,17 +8,19 @@ import java.util.UUID;
 
 public interface TierRepository extends JpaRepository<Tier, UUID> {
 
-    // "OrderByRankDesc" is parsed from the method name itself — Spring Data
-    // turns this into "... WHERE active = true ORDER BY rank DESC" with no
-    // query written by hand. This ordering matches exactly what
-    // computeTierFromCriteria() (tech-spec §4.2) needs: highest tier first.
     List<Tier> findByActiveTrueOrderByRankDesc();
 
     boolean existsByNameIgnoreCase(String name);
 
     boolean existsByRank(Integer rank);
 
-    boolean existsByNameIgnoreCaseAndIdNot(String name, UUID id);
-    
-    boolean existsByRankAndIdNot(Integer rank, UUID id);
+    boolean existsByNameIgnoreCaseAndIdNot(
+            String name,
+            UUID id
+    );
+
+    boolean existsByRankAndIdNot(
+            Integer rank,
+            UUID id
+    );
 }
