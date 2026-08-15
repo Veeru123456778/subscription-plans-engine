@@ -3,6 +3,7 @@ package com.firstclub.membership.benefit.dto;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -23,7 +24,7 @@ public class CreatePlanBenefitRequest {
 
     private String discountType;
 
-    private String eligibility;
+    private JsonNode eligibility;
 
     @Min(1)
     private Integer monthlyLimit;

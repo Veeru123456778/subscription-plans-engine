@@ -2,7 +2,7 @@ package com.firstclub.membership.benefit.dto;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
-
+import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.util.UUID;
 
@@ -22,7 +22,7 @@ public class PlanBenefitResponse {
 
     private String discountType;
 
-    private String eligibility;
+    private JsonNode eligibility;
 
     private Integer monthlyLimit;
 
