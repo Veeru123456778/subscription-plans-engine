@@ -8,7 +8,7 @@ import java.util.UUID;
 
 @Getter
 @Setter
-public class ChangePlanRequest {
+public class ChangeMembershipPlanRequest {
 
     @NotNull
     private UUID planId;

@@ -1,6 +1,6 @@
 package com.firstclub.membership.membership.service;
 
-import com.firstclub.membership.membership.dto.ChangePlanRequest;
+import com.firstclub.membership.membership.dto.ChangeMembershipPlanRequest;
 import com.firstclub.membership.membership.dto.MembershipBenefitsResponse;
 import com.firstclub.membership.membership.dto.MembershipResponse;
 import com.firstclub.membership.membership.dto.SubscribeRequest;
@@ -20,7 +20,7 @@ public interface MembershipService {
 
     MembershipResponse changePlan(
             UUID membershipId,
-            ChangePlanRequest request
+            ChangeMembershipPlanRequest request
     );
 
     MembershipResponse upgradeTier(

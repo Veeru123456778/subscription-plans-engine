@@ -6,7 +6,7 @@ import com.firstclub.membership.benefit.mapper.PlanBenefitMapper;
 import com.firstclub.membership.benefit.repository.PlanBenefitRepository;
 import com.firstclub.membership.common.exception.ConflictException;
 import com.firstclub.membership.common.exception.ResourceNotFoundException;
-import com.firstclub.membership.membership.dto.ChangePlanRequest;
+import com.firstclub.membership.membership.dto.ChangeMembershipPlanRequest;
 import com.firstclub.membership.membership.dto.MembershipBenefitsResponse;
 import com.firstclub.membership.membership.dto.MembershipResponse;
 import com.firstclub.membership.membership.dto.SubscribeRequest;
@@ -120,10 +120,18 @@ public class MembershipServiceImpl
                         plan.getId()
                 );
 
+        /*
+         * Initial Tier Evaluation
+         *
+         * Important:
+         * Only active Tiers belonging to the selected Plan
+         * are evaluated.
+         */
         var initialTier =
                 tierAssignmentService
                         .determineInitialTier(
-                                request.getUserId()
+                                request.getUserId(),
+                                plan.getId()
                         );
 
         Instant startDate =
@@ -160,7 +168,7 @@ public class MembershipServiceImpl
     @Override
     public MembershipResponse changePlan(
             UUID membershipId,
-            ChangePlanRequest request
+            ChangeMembershipPlanRequest request
     ) {
 
         Membership membership =
@@ -192,7 +200,7 @@ public class MembershipServiceImpl
         /*
          * V1 DEMO:
          * External payment is assumed to be successful.
-         * Only the membership engine state is updated.
+         * No payment gateway implementation is required.
          */
 
         Instant startDate =
@@ -205,12 +213,33 @@ public class MembershipServiceImpl
                         )
                 );
 
+        /*
+         * The Membership is moving to a new Plan.
+         *
+         * Therefore the old Plan's Tier cannot remain attached.
+         * Re-evaluate the Tier using only the new Plan's active Tiers.
+         */
+        var newTier =
+                tierAssignmentService
+                        .determineInitialTier(
+                                membership.getUserId(),
+                                targetPlan.getId()
+                        );
+
         membership.setPlan(
                 targetPlan
         );
 
         membership.setPlanPrice(
                 targetPrice
+        );
+
+        membership.setCurrentTier(
+                newTier.orElse(null)
+        );
+
+        membership.setTierSource(
+                TierSource.AUTO
         );
 
         membership.setStartDate(
@@ -268,6 +297,20 @@ public class MembershipServiceImpl
             );
         }
 
+        /*
+         * A Tier belongs to exactly one Plan.
+         *
+         * Therefore a Tier upgrade can only happen
+         * within the Membership's current Plan.
+         */
+        if (!targetTier.getPlan().getId()
+                .equals(membership.getPlan().getId())) {
+
+            throw new ConflictException(
+                    "Target tier does not belong to membership plan"
+            );
+        }
+
         Tier currentTier =
                 membership.getCurrentTier();
 
@@ -295,10 +338,11 @@ public class MembershipServiceImpl
         /*
          * V1 DEMO:
          * Payment is assumed to be successful.
-         * No payment integration is implemented.
          *
-         * The calculated upgrade price is intentionally
-         * kept inside the business flow for validation/demo.
+         * No payment gateway implementation is required.
+         *
+         * The calculated price is retained as part of
+         * the business calculation.
          */
 
         if (upgradePrice.signum() < 0) {

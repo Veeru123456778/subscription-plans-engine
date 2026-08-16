@@ -20,14 +20,15 @@ public class TierAssignmentService {
 
     @Transactional(readOnly = true)
     public Optional<Tier> determineInitialTier(
-            UUID userId
+            UUID userId,
+            UUID planId
     ) {
 
         TierEvaluationContext context =
                 customerDataProvider.getCustomerData(userId);
 
         return tierRepository
-                .findByActiveTrueOrderByRankDesc()
+                .findByPlanIdAndActiveTrueOrderByRankDesc(planId)
                 .stream()
                 .filter(tier ->
                         tierEligibilityEvaluator.qualifies(

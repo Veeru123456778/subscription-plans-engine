@@ -1,6 +1,6 @@
 package com.firstclub.membership.membership.controller;
 
-import com.firstclub.membership.membership.dto.ChangePlanRequest;
+import com.firstclub.membership.membership.dto.ChangeMembershipPlanRequest;
 import com.firstclub.membership.membership.dto.MembershipBenefitsResponse;
 import com.firstclub.membership.membership.dto.MembershipResponse;
 import com.firstclub.membership.membership.dto.SubscribeRequest;
@@ -56,7 +56,7 @@ public class MembershipController {
     @PatchMapping("/{membershipId}/plan")
     public MembershipResponse changePlan(
             @PathVariable UUID membershipId,
-            @Valid @RequestBody ChangePlanRequest request
+            @Valid @RequestBody ChangeMembershipPlanRequest request
     ) {
 
         return membershipService.changePlan(
