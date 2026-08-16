@@ -1,7 +1,7 @@
 package com.firstclub.membership.membership.evaluation;
 
 import com.firstclub.membership.tier.entity.Tier;
-import com.firstclub.membership.tier.repository.TierRepository;
+import com.firstclub.membership.tier.service.TierService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,7 +14,7 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class TierAssignmentService {
 
-    private final TierRepository tierRepository;
+    private final TierService tierService;
     private final MockCustomerDataProvider customerDataProvider;
     private final TierEligibilityEvaluator tierEligibilityEvaluator;
 
@@ -25,10 +25,12 @@ public class TierAssignmentService {
     ) {
 
         TierEvaluationContext context =
-                customerDataProvider.getCustomerData(userId);
+                customerDataProvider.getCustomerData(
+                        userId
+                );
 
-        return tierRepository
-                .findByPlanIdAndActiveTrueOrderByRankDesc(planId)
+        return tierService
+                .getActiveTierEntitiesByPlan(planId)
                 .stream()
                 .filter(tier ->
                         tierEligibilityEvaluator.qualifies(
@@ -36,6 +38,10 @@ public class TierAssignmentService {
                                 context
                         )
                 )
-                .max(Comparator.comparing(Tier::getRank));
+                .max(
+                        Comparator.comparing(
+                                Tier::getRank
+                        )
+                );
     }
 }

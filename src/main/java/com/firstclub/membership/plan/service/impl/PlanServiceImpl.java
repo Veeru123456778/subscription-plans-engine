@@ -1,5 +1,7 @@
 package com.firstclub.membership.plan.service.impl;
 
+import com.firstclub.membership.common.exception.ConflictException;
+import com.firstclub.membership.common.exception.ResourceNotFoundException;
 import com.firstclub.membership.plan.dto.CreatePlanRequest;
 import com.firstclub.membership.plan.dto.PlanResponse;
 import com.firstclub.membership.plan.dto.UpdatePlanRequest;
@@ -32,16 +34,23 @@ public class PlanServiceImpl implements PlanService {
         return planRepository.findByActiveTrue()
                 .stream()
                 .map(plan -> {
-                    List<PlanPrice> prices =
-                            planPriceRepository.findByPlanAndActiveTrue(plan);
 
-                    return planMapper.toResponse(plan, prices);
+                    List<PlanPrice> prices =
+                            planPriceRepository
+                                    .findByPlanAndActiveTrue(plan);
+
+                    return planMapper.toResponse(
+                            plan,
+                            prices
+                    );
                 })
                 .toList();
     }
 
     @Override
-    public PlanResponse createPlan(CreatePlanRequest request) {
+    public PlanResponse createPlan(
+            CreatePlanRequest request
+    ) {
 
         Plan plan = new Plan(
                 request.name(),
@@ -49,72 +58,101 @@ public class PlanServiceImpl implements PlanService {
                 request.consecutiveTierUpgradePrice()
         );
 
-        Plan savedPlan = planRepository.save(plan);
+        Plan savedPlan =
+                planRepository.save(plan);
 
-        List<PlanPrice> prices = request.prices()
-                .stream()
-                .map(priceRequest -> new PlanPrice(
-                        savedPlan,
-                        priceRequest.billingPeriod(),
-                        priceRequest.durationDays(),
-                        priceRequest.price(),
-                        priceRequest.currency()
-                ))
-                .toList();
+        List<PlanPrice> prices =
+                request.prices()
+                        .stream()
+                        .map(priceRequest ->
+                                new PlanPrice(
+                                        savedPlan,
+                                        priceRequest.billingPeriod(),
+                                        priceRequest.durationDays(),
+                                        priceRequest.price(),
+                                        priceRequest.currency()
+                                )
+                        )
+                        .toList();
 
         List<PlanPrice> savedPrices =
                 planPriceRepository.saveAll(prices);
 
-        return planMapper.toResponse(savedPlan, savedPrices);
+        return planMapper.toResponse(
+                savedPlan,
+                savedPrices
+        );
     }
 
     @Override
-      public PlanResponse updatePlan(
-                UUID planId,
-                UpdatePlanRequest request
-        ) {
+    public PlanResponse updatePlan(
+            UUID planId,
+            UpdatePlanRequest request
+    ) {
 
-        Plan plan = planRepository.findById(planId)
-                .orElseThrow(() ->
-                        new IllegalArgumentException(
-                                "Plan not found: " + planId
-                        )
-                );
+        Plan plan = getPlan(planId);
 
         if (request.name() != null) {
-                plan.setName(request.name());
+            plan.setName(request.name());
         }
 
         if (request.rank() != null) {
-                plan.setRank(request.rank());
+            plan.setRank(request.rank());
         }
 
         if (request.consecutiveTierUpgradePrice() != null) {
-                plan.setConsecutiveTierUpgradePrice(
-                        request.consecutiveTierUpgradePrice()
-                );
+            plan.setConsecutiveTierUpgradePrice(
+                    request.consecutiveTierUpgradePrice()
+            );
         }
 
-        Plan savedPlan = planRepository.save(plan);
+        Plan savedPlan =
+                planRepository.save(plan);
 
         List<PlanPrice> prices =
-                planPriceRepository.findByPlanAndActiveTrue(savedPlan);
+                planPriceRepository
+                        .findByPlanAndActiveTrue(savedPlan);
 
-        return planMapper.toResponse(savedPlan, prices);
+        return planMapper.toResponse(
+                savedPlan,
+                prices
+        );
     }
 
     @Override
     public void disablePlan(UUID planId) {
 
-        Plan plan = planRepository.findById(planId)
-                .orElseThrow(() ->
-                        new IllegalArgumentException(
-                                "Plan not found: " + planId
-                        )
-                );
+        Plan plan = getPlan(planId);
 
         plan.setActive(false);
 
         planRepository.save(plan);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Plan getPlan(UUID planId) {
+
+        return planRepository.findById(planId)
+                .orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Plan not found: " + planId
+                        )
+                );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Plan getActivePlan(UUID planId) {
+
+        Plan plan = getPlan(planId);
+
+        if (!plan.isActive()) {
+            throw new ConflictException(
+                    "Plan is inactive: " + planId
+            );
+        }
+
+        return plan;
     }
 }

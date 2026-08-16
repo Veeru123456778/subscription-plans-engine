@@ -3,6 +3,7 @@ package com.firstclub.membership.plan.service;
 import com.firstclub.membership.plan.dto.CreatePlanPriceRequest;
 import com.firstclub.membership.plan.dto.PlanPriceResponse;
 import com.firstclub.membership.plan.dto.UpdatePlanPriceRequest;
+import com.firstclub.membership.plan.entity.PlanPrice;
 
 import java.util.UUID;
 
@@ -22,5 +23,10 @@ public interface PlanPriceService {
     void disablePrice(
             UUID planId,
             UUID priceId
+    );
+
+    PlanPrice getActivePrice(
+            UUID planPriceId,
+            UUID planId
     );
 }

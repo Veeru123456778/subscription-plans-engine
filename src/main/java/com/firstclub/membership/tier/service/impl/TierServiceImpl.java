@@ -40,7 +40,9 @@ public class TierServiceImpl implements TierService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<TierResponse> getActiveTiersByPlan(UUID planId) {
+    public List<TierResponse> getActiveTiersByPlan(
+            UUID planId
+    ) {
 
         if (!planRepository.existsById(planId)) {
             throw new ResourceNotFoundException(
@@ -49,19 +51,27 @@ public class TierServiceImpl implements TierService {
         }
 
         return tierRepository
-                .findByPlanIdAndActiveTrueOrderByRankDesc(planId)
+                .findByPlanIdAndActiveTrueOrderByRankDesc(
+                        planId
+                )
                 .stream()
                 .map(tierMapper::toResponse)
                 .toList();
     }
 
     @Override
-    public TierResponse createTier(CreateTierRequest request) {
+    public TierResponse createTier(
+            CreateTierRequest request
+    ) {
 
-        Plan plan = planRepository.findById(request.getPlanId())
+        Plan plan =
+                planRepository.findById(
+                        request.getPlanId()
+                )
                 .orElseThrow(() ->
                         new ResourceNotFoundException(
-                                "Plan not found: " + request.getPlanId()
+                                "Plan not found: "
+                                        + request.getPlanId()
                         )
                 );
 
@@ -91,16 +101,20 @@ public class TierServiceImpl implements TierService {
             );
         }
 
-        Tier tier = new Tier(
-                plan,
-                request.getName(),
-                request.getRank(),
-                request.getEligibility()
+        Tier tier =
+                new Tier(
+                        plan,
+                        request.getName(),
+                        request.getRank(),
+                        request.getEligibility()
+                );
+
+        Tier savedTier =
+                tierRepository.save(tier);
+
+        return tierMapper.toResponse(
+                savedTier
         );
-
-        Tier savedTier = tierRepository.save(tier);
-
-        return tierMapper.toResponse(savedTier);
     }
 
     @Override
@@ -109,19 +123,12 @@ public class TierServiceImpl implements TierService {
             UpdateTierRequest request
     ) {
 
-        Tier tier = tierRepository.findById(tierId)
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Tier not found: " + tierId
-                        )
-                );
+        Tier tier =
+                getTier(tierId);
 
-        UUID planId = tier.getPlan().getId();
+        UUID planId =
+                tier.getPlan().getId();
 
-        /*
-         * Only enforce name/rank uniqueness when the tier is
-         * or is becoming ACTIVE.
-         */
         boolean resultingActive =
                 request.getActive() != null
                         ? request.getActive()
@@ -160,21 +167,83 @@ public class TierServiceImpl implements TierService {
         }
 
         if (request.getName() != null) {
-            tier.setName(request.getName());
+            tier.setName(
+                    request.getName()
+            );
         }
 
         if (request.getRank() != null) {
-            tier.setRank(request.getRank());
+            tier.setRank(
+                    request.getRank()
+            );
         }
 
         if (request.getEligibility() != null) {
-            tier.setEligibility(request.getEligibility());
+            tier.setEligibility(
+                    request.getEligibility()
+            );
         }
 
         if (request.getActive() != null) {
-            tier.setActive(request.getActive());
+            tier.setActive(
+                    request.getActive()
+            );
         }
 
-        return tierMapper.toResponse(tier);
+        return tierMapper.toResponse(
+                tier
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Tier getTier(
+            UUID tierId
+    ) {
+
+        return tierRepository.findById(
+                tierId
+        ).orElseThrow(() ->
+                new ResourceNotFoundException(
+                        "Tier not found: " + tierId
+                )
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Tier getActiveTier(
+            UUID tierId
+    ) {
+
+        Tier tier =
+                getTier(tierId);
+
+        if (!tier.isActive()) {
+            throw new ConflictException(
+                    "Target tier is inactive: "
+                            + tierId
+            );
+        }
+
+        return tier;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Tier> getActiveTierEntitiesByPlan(
+            UUID planId
+    ) {
+
+        if (!planRepository.existsById(planId)) {
+            throw new ResourceNotFoundException(
+                    "Plan not found: " + planId
+            );
+        }
+
+        return tierRepository
+                .findByPlanIdAndActiveTrueOrderByRankDesc(
+                        planId
+                );
     }
 }

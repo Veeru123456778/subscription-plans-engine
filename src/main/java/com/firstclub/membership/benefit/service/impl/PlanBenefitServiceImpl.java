@@ -8,6 +8,7 @@ import com.firstclub.membership.benefit.mapper.PlanBenefitMapper;
 import com.firstclub.membership.benefit.repository.PlanBenefitRepository;
 import com.firstclub.membership.benefit.service.PlanBenefitService;
 import com.firstclub.membership.benefit.validation.BenefitTypeValidator;
+import com.firstclub.membership.common.exception.BadRequestException;
 import com.firstclub.membership.common.exception.ConflictException;
 import com.firstclub.membership.common.exception.ResourceNotFoundException;
 import com.firstclub.membership.plan.entity.Plan;
@@ -18,6 +19,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -39,7 +42,8 @@ public class PlanBenefitServiceImpl
             UUID planId
     ) {
 
-        Plan plan = getPlan(planId);
+        Plan plan =
+                getPlan(planId);
 
         return planBenefitRepository
                 .findByPlanAndActiveTrue(plan)
@@ -54,11 +58,15 @@ public class PlanBenefitServiceImpl
             CreatePlanBenefitRequest request
     ) {
 
-        Plan plan = getPlan(planId);
+        Plan plan =
+                getPlan(planId);
 
-        benefitTypeValidator.validate(request.getType());
+        benefitTypeValidator.validate(
+                request.getType()
+        );
 
-        Tier tier = getTier(request.getTierId());
+        Tier tier =
+                getTier(request.getTierId());
 
         validateDiscountConfiguration(
                 request.getType(),
@@ -73,18 +81,21 @@ public class PlanBenefitServiceImpl
                 null
         );
 
-        PlanBenefit benefit = new PlanBenefit(
-                plan,
-                tier,
-                request.getType(),
-                request.getValue(),
-                request.getDiscountType(),
-                request.getEligibility(),
-                request.getMonthlyLimit()
-        );
+        PlanBenefit benefit =
+                new PlanBenefit(
+                        plan,
+                        tier,
+                        request.getType(),
+                        request.getValue(),
+                        request.getDiscountType(),
+                        request.getEligibility(),
+                        request.getMonthlyLimit()
+                );
 
         return planBenefitMapper.toResponse(
-                planBenefitRepository.save(benefit)
+                planBenefitRepository.save(
+                        benefit
+                )
         );
     }
 
@@ -95,25 +106,32 @@ public class PlanBenefitServiceImpl
             UpdatePlanBenefitRequest request
     ) {
 
-        Plan plan = getPlan(planId);
+        Plan plan =
+                getPlan(planId);
 
         PlanBenefit benefit =
-                planBenefitRepository.findById(benefitId)
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Plan benefit not found: "
-                                                + benefitId
+                planBenefitRepository.findById(
+                        benefitId
+                ).orElseThrow(() ->
+                        new ResourceNotFoundException(
+                                "Plan benefit not found: "
+                                        + benefitId
                         )
-                        );
+                );
 
-        if (!benefit.getPlan().getId().equals(planId)) {
+        if (!benefit.getPlan().getId()
+                .equals(planId)) {
+
             throw new ResourceNotFoundException(
-                    "Plan benefit not found: " + benefitId
+                    "Plan benefit not found: "
+                            + benefitId
             );
         }
 
         if (request.getType() != null) {
-            benefitTypeValidator.validate(request.getType());
+            benefitTypeValidator.validate(
+                    request.getType()
+            );
         }
 
         String type =
@@ -128,7 +146,8 @@ public class PlanBenefitServiceImpl
                         ? benefit.getTier().getId()
                         : null;
 
-        Tier tier = getTier(tierId);
+        Tier tier =
+                getTier(tierId);
 
         validateDiscountConfiguration(
                 type,
@@ -152,11 +171,15 @@ public class PlanBenefitServiceImpl
         }
 
         if (request.getType() != null) {
-            benefit.setType(request.getType());
+            benefit.setType(
+                    request.getType()
+            );
         }
 
         if (request.getValue() != null) {
-            benefit.setValue(request.getValue());
+            benefit.setValue(
+                    request.getValue()
+            );
         }
 
         if (request.getDiscountType() != null) {
@@ -183,31 +206,67 @@ public class PlanBenefitServiceImpl
             );
         }
 
-        return planBenefitMapper.toResponse(benefit);
+        return planBenefitMapper.toResponse(
+                benefit
+        );
     }
 
-    private Plan getPlan(UUID planId) {
+    @Override
+    @Transactional(readOnly = true)
+    public List<PlanBenefit> getEffectiveBenefits(
+            Plan plan,
+            Tier tier
+    ) {
 
-        return planRepository.findById(planId)
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Plan not found: " + planId
-                        )
+        List<PlanBenefit> benefits =
+                new ArrayList<>(
+                        planBenefitRepository
+                                .findByPlanAndActiveTrue(
+                                        plan
+                                )
                 );
+
+        if (tier != null) {
+            benefits.addAll(
+                    planBenefitRepository
+                            .findByPlanAndTierAndActiveTrue(
+                                    plan,
+                                    tier
+                            )
+            );
+        }
+
+        return benefits;
     }
 
-    private Tier getTier(UUID tierId) {
+    private Plan getPlan(
+            UUID planId
+    ) {
+
+        return planRepository.findById(
+                planId
+        ).orElseThrow(() ->
+                new ResourceNotFoundException(
+                        "Plan not found: " + planId
+                )
+        );
+    }
+
+    private Tier getTier(
+            UUID tierId
+    ) {
 
         if (tierId == null) {
             return null;
         }
 
-        return tierRepository.findById(tierId)
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Tier not found: " + tierId
-                        )
-                );
+        return tierRepository.findById(
+                tierId
+        ).orElseThrow(() ->
+                new ResourceNotFoundException(
+                        "Tier not found: " + tierId
+                )
+        );
     }
 
     private void validateDuplicate(
@@ -220,33 +279,38 @@ public class PlanBenefitServiceImpl
         boolean exists;
 
         if (tier == null) {
-            exists = benefitId == null
-                    ? planBenefitRepository
-                    .existsByPlanAndTypeAndTierIsNull(
-                            plan,
-                            type
-                    )
-                    : planBenefitRepository
-                    .existsByPlanAndTypeAndTierIsNullAndIdNot(
-                            plan,
-                            type,
-                            benefitId
-                    );
+
+            exists =
+                    benefitId == null
+                            ? planBenefitRepository
+                            .existsByPlanAndTypeAndTierIsNull(
+                                    plan,
+                                    type
+                            )
+                            : planBenefitRepository
+                            .existsByPlanAndTypeAndTierIsNullAndIdNot(
+                                    plan,
+                                    type,
+                                    benefitId
+                            );
+
         } else {
-            exists = benefitId == null
-                    ? planBenefitRepository
-                    .existsByPlanAndTierAndType(
-                            plan,
-                            tier,
-                            type
-                    )
-                    : planBenefitRepository
-                    .existsByPlanAndTierAndTypeAndIdNot(
-                            plan,
-                            tier,
-                            type,
-                            benefitId
-                    );
+
+            exists =
+                    benefitId == null
+                            ? planBenefitRepository
+                            .existsByPlanAndTierAndType(
+                                    plan,
+                                    tier,
+                                    type
+                            )
+                            : planBenefitRepository
+                            .existsByPlanAndTierAndTypeAndIdNot(
+                                    plan,
+                                    tier,
+                                    type,
+                                    benefitId
+                            );
         }
 
         if (exists) {
@@ -260,20 +324,20 @@ public class PlanBenefitServiceImpl
 
     private void validateDiscountConfiguration(
             String type,
-            java.math.BigDecimal value,
+            BigDecimal value,
             String discountType
     ) {
 
         if ("DISCOUNT".equals(type)) {
 
             if (value == null) {
-                throw new com.firstclub.membership.common.exception.BadRequestException(
+                throw new BadRequestException(
                         "Discount value is required"
                 );
             }
 
             if (discountType == null) {
-                throw new com.firstclub.membership.common.exception.BadRequestException(
+                throw new BadRequestException(
                         "Discount type is required for DISCOUNT"
                 );
             }
@@ -281,7 +345,7 @@ public class PlanBenefitServiceImpl
             if (!"PERCENT".equals(discountType)
                     && !"FLAT".equals(discountType)) {
 
-                throw new com.firstclub.membership.common.exception.BadRequestException(
+                throw new BadRequestException(
                         "Unsupported discount type: "
                                 + discountType
                 );
@@ -289,17 +353,17 @@ public class PlanBenefitServiceImpl
 
             if ("PERCENT".equals(discountType)
                     && value.compareTo(
-                    java.math.BigDecimal.valueOf(100)
+                    BigDecimal.valueOf(100)
             ) > 0) {
 
-                throw new com.firstclub.membership.common.exception.BadRequestException(
+                throw new BadRequestException(
                         "Percentage discount cannot exceed 100"
                 );
             }
 
         } else if (discountType != null) {
 
-            throw new com.firstclub.membership.common.exception.BadRequestException(
+            throw new BadRequestException(
                     "Discount type is only valid for DISCOUNT benefits"
             );
         }

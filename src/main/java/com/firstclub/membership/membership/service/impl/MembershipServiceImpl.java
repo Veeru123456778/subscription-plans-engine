@@ -3,7 +3,7 @@ package com.firstclub.membership.membership.service.impl;
 import com.firstclub.membership.benefit.dto.PlanBenefitResponse;
 import com.firstclub.membership.benefit.entity.PlanBenefit;
 import com.firstclub.membership.benefit.mapper.PlanBenefitMapper;
-import com.firstclub.membership.benefit.repository.PlanBenefitRepository;
+import com.firstclub.membership.benefit.service.PlanBenefitService;
 import com.firstclub.membership.common.exception.ConflictException;
 import com.firstclub.membership.common.exception.ResourceNotFoundException;
 import com.firstclub.membership.membership.dto.ChangeMembershipPlanRequest;
@@ -20,10 +20,10 @@ import com.firstclub.membership.membership.repository.MembershipRepository;
 import com.firstclub.membership.membership.service.MembershipService;
 import com.firstclub.membership.plan.entity.Plan;
 import com.firstclub.membership.plan.entity.PlanPrice;
-import com.firstclub.membership.plan.repository.PlanPriceRepository;
-import com.firstclub.membership.plan.repository.PlanRepository;
+import com.firstclub.membership.plan.service.PlanPriceService;
+import com.firstclub.membership.plan.service.PlanService;
 import com.firstclub.membership.tier.entity.Tier;
-import com.firstclub.membership.tier.repository.TierRepository;
+import com.firstclub.membership.tier.service.TierService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,7 +31,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -44,13 +43,11 @@ public class MembershipServiceImpl
     private final MembershipRepository membershipRepository;
     private final MembershipMapper membershipMapper;
 
-    private final PlanRepository planRepository;
-    private final PlanPriceRepository planPriceRepository;
-
-    private final TierRepository tierRepository;
+    private final PlanService planService;
+    private final PlanPriceService planPriceService;
+    private final TierService tierService;
     private final TierAssignmentService tierAssignmentService;
-
-    private final PlanBenefitRepository planBenefitRepository;
+    private final PlanBenefitService planBenefitService;
     private final PlanBenefitMapper planBenefitMapper;
 
     @Override
@@ -110,23 +107,16 @@ public class MembershipServiceImpl
         }
 
         Plan plan =
-                getActivePlan(
+                planService.getActivePlan(
                         request.getPlanId()
                 );
 
         PlanPrice planPrice =
-                getActivePlanPrice(
+                planPriceService.getActivePrice(
                         request.getPlanPriceId(),
                         plan.getId()
                 );
 
-        /*
-         * Initial Tier Evaluation
-         *
-         * Important:
-         * Only active Tiers belonging to the selected Plan
-         * are evaluated.
-         */
         var initialTier =
                 tierAssignmentService
                         .determineInitialTier(
@@ -177,12 +167,12 @@ public class MembershipServiceImpl
                 );
 
         Plan targetPlan =
-                getActivePlan(
+                planService.getActivePlan(
                         request.getPlanId()
                 );
 
         PlanPrice targetPrice =
-                getActivePlanPrice(
+                planPriceService.getActivePrice(
                         request.getPlanPriceId(),
                         targetPlan.getId()
                 );
@@ -197,12 +187,6 @@ public class MembershipServiceImpl
             );
         }
 
-        /*
-         * V1 DEMO:
-         * External payment is assumed to be successful.
-         * No payment gateway implementation is required.
-         */
-
         Instant startDate =
                 Instant.now();
 
@@ -214,10 +198,9 @@ public class MembershipServiceImpl
                 );
 
         /*
-         * The Membership is moving to a new Plan.
+         * The old Tier belongs to the old Plan.
          *
-         * Therefore the old Plan's Tier cannot remain attached.
-         * Re-evaluate the Tier using only the new Plan's active Tiers.
+         * Re-evaluate against the target Plan only.
          */
         var newTier =
                 tierAssignmentService
@@ -279,29 +262,13 @@ public class MembershipServiceImpl
         }
 
         Tier targetTier =
-                tierRepository.findById(
+                tierService.getActiveTier(
                         request.getTargetTierId()
-                )
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Target tier not found: "
-                                        + request.getTargetTierId()
-                        )
                 );
 
-        if (!targetTier.isActive()) {
-
-            throw new ConflictException(
-                    "Target tier is inactive: "
-                            + targetTier.getId()
-            );
-        }
-
         /*
-         * A Tier belongs to exactly one Plan.
-         *
-         * Therefore a Tier upgrade can only happen
-         * within the Membership's current Plan.
+         * Tier upgrades are only allowed inside the
+         * Membership's current Plan.
          */
         if (!targetTier.getPlan().getId()
                 .equals(membership.getPlan().getId())) {
@@ -338,13 +305,7 @@ public class MembershipServiceImpl
         /*
          * V1 DEMO:
          * Payment is assumed to be successful.
-         *
-         * No payment gateway implementation is required.
-         *
-         * The calculated price is retained as part of
-         * the business calculation.
          */
-
         if (upgradePrice.signum() < 0) {
 
             throw new ConflictException(
@@ -382,23 +343,10 @@ public class MembershipServiceImpl
                 );
 
         List<PlanBenefit> benefits =
-                new ArrayList<>(
-                        planBenefitRepository
-                                .findByPlanAndActiveTrue(
-                                        membership.getPlan()
-                                )
+                planBenefitService.getEffectiveBenefits(
+                        membership.getPlan(),
+                        membership.getCurrentTier()
                 );
-
-        if (membership.getCurrentTier() != null) {
-
-            benefits.addAll(
-                    planBenefitRepository
-                            .findByPlanAndTierAndActiveTrue(
-                                    membership.getPlan(),
-                                    membership.getCurrentTier()
-                            )
-            );
-        }
 
         List<PlanBenefitResponse> responses =
                 benefits.stream()
@@ -481,60 +429,5 @@ public class MembershipServiceImpl
         }
 
         return membership;
-    }
-
-    private Plan getActivePlan(
-            UUID planId
-    ) {
-
-        Plan plan =
-                planRepository.findById(
-                        planId
-                )
-                .orElseThrow(() ->
-                        new ResourceNotFoundException(
-                                "Plan not found: "
-                                        + planId
-                        )
-                );
-
-        if (!plan.isActive()) {
-
-            throw new ConflictException(
-                    "Plan is inactive: "
-                            + planId
-            );
-        }
-
-        return plan;
-    }
-
-    private PlanPrice getActivePlanPrice(
-            UUID planPriceId,
-            UUID planId
-    ) {
-
-        PlanPrice planPrice =
-                planPriceRepository
-                        .findByIdAndPlanId(
-                                planPriceId,
-                                planId
-                        )
-                        .orElseThrow(() ->
-                                new ResourceNotFoundException(
-                                        "Plan price not found for selected plan: "
-                                                + planPriceId
-                                )
-                        );
-
-        if (!planPrice.isActive()) {
-
-            throw new ConflictException(
-                    "Plan price is inactive: "
-                            + planPriceId
-            );
-        }
-
-        return planPrice;
     }
 }

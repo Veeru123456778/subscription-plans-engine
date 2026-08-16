@@ -3,11 +3,10 @@ package com.firstclub.membership.plan.service;
 import com.firstclub.membership.plan.dto.CreatePlanRequest;
 import com.firstclub.membership.plan.dto.PlanResponse;
 import com.firstclub.membership.plan.dto.UpdatePlanRequest;
+import com.firstclub.membership.plan.entity.Plan;
 
 import java.util.List;
 import java.util.UUID;
-
-// Controllers depend on this interface, not PlanServiceImpl directly. In a single-implementation service like this it mainly pays off for testing — a test can mock PlanService without knowing anything about how it'sactually implemented.
 
 public interface PlanService {
 
@@ -21,4 +20,8 @@ public interface PlanService {
     );
 
     void disablePlan(UUID planId);
+
+    Plan getPlan(UUID planId);
+
+    Plan getActivePlan(UUID planId);
 }

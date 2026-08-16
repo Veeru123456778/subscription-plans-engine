@@ -1,5 +1,7 @@
 package com.firstclub.membership.plan.service.impl;
 
+import com.firstclub.membership.common.exception.ConflictException;
+import com.firstclub.membership.common.exception.ResourceNotFoundException;
 import com.firstclub.membership.plan.dto.CreatePlanPriceRequest;
 import com.firstclub.membership.plan.dto.PlanPriceResponse;
 import com.firstclub.membership.plan.dto.UpdatePlanPriceRequest;
@@ -18,7 +20,8 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 @Transactional
-public class PlanPriceServiceImpl implements PlanPriceService {
+public class PlanPriceServiceImpl
+        implements PlanPriceService {
 
     private final PlanRepository planRepository;
     private final PlanPriceRepository planPriceRepository;
@@ -29,25 +32,30 @@ public class PlanPriceServiceImpl implements PlanPriceService {
             UUID planId,
             CreatePlanPriceRequest request
     ) {
-        Plan plan = planRepository.findById(planId)
-                .orElseThrow(() ->
-                        new IllegalArgumentException(
-                                "Plan not found: " + planId
-                        )
-                );
 
-        PlanPrice planPrice = new PlanPrice(
-                plan,
-                request.billingPeriod(),
-                request.durationDays(),
-                request.price(),
-                request.currency()
-        );
+        Plan plan =
+                planRepository.findById(planId)
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Plan not found: " + planId
+                                )
+                        );
+
+        PlanPrice planPrice =
+                new PlanPrice(
+                        plan,
+                        request.billingPeriod(),
+                        request.durationDays(),
+                        request.price(),
+                        request.currency()
+                );
 
         PlanPrice savedPrice =
                 planPriceRepository.save(planPrice);
 
-        return planPriceMapper.toResponse(savedPrice);
+        return planPriceMapper.toResponse(
+                savedPrice
+        );
     }
 
     @Override
@@ -56,13 +64,19 @@ public class PlanPriceServiceImpl implements PlanPriceService {
             UUID priceId,
             UpdatePlanPriceRequest request
     ) {
-        PlanPrice planPrice = planPriceRepository
-                .findByIdAndPlanId(priceId, planId)
-                .orElseThrow(() ->
-                        new IllegalArgumentException(
-                                "Plan price not found: " + priceId
+
+        PlanPrice planPrice =
+                planPriceRepository
+                        .findByIdAndPlanId(
+                                priceId,
+                                planId
                         )
-                );
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Plan price not found: "
+                                                + priceId
+                                )
+                        );
 
         if (request.durationDays() != null) {
             planPrice.setDurationDays(
@@ -83,9 +97,13 @@ public class PlanPriceServiceImpl implements PlanPriceService {
         }
 
         PlanPrice savedPrice =
-                planPriceRepository.save(planPrice);
+                planPriceRepository.save(
+                        planPrice
+                );
 
-        return planPriceMapper.toResponse(savedPrice);
+        return planPriceMapper.toResponse(
+                savedPrice
+        );
     }
 
     @Override
@@ -93,16 +111,54 @@ public class PlanPriceServiceImpl implements PlanPriceService {
             UUID planId,
             UUID priceId
     ) {
-        PlanPrice planPrice = planPriceRepository
-                .findByIdAndPlanId(priceId, planId)
-                .orElseThrow(() ->
-                        new IllegalArgumentException(
-                                "Plan price not found: " + priceId
+
+        PlanPrice planPrice =
+                planPriceRepository
+                        .findByIdAndPlanId(
+                                priceId,
+                                planId
                         )
-                );
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Plan price not found: "
+                                                + priceId
+                                )
+                        );
 
         planPrice.setActive(false);
 
-        planPriceRepository.save(planPrice);
+        planPriceRepository.save(
+                planPrice
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PlanPrice getActivePrice(
+            UUID planPriceId,
+            UUID planId
+    ) {
+
+        PlanPrice planPrice =
+                planPriceRepository
+                        .findByIdAndPlanId(
+                                planPriceId,
+                                planId
+                        )
+                        .orElseThrow(() ->
+                                new ResourceNotFoundException(
+                                        "Plan price not found for selected plan: "
+                                                + planPriceId
+                                )
+                        );
+
+        if (!planPrice.isActive()) {
+            throw new ConflictException(
+                    "Plan price is inactive: "
+                            + planPriceId
+            );
+        }
+
+        return planPrice;
     }
 }
