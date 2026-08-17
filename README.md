@@ -25,7 +25,7 @@ docker ps
 ### 2. Run the Application
 
 ```bash
-mvn spring-boot:run
+mvn spring-boot:run -Dspring-boot.run.jvmArguments="-Duser.timezone=Asia/Kolkata"
 ```
 
 The application runs on:
